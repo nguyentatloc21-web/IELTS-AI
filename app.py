@@ -771,17 +771,17 @@ if 'reading_highlight' not in st.session_state: st.session_state['reading_highli
 if 'writing_step' not in st.session_state: st.session_state['writing_step'] = 'outline' 
 if 'writing_outline_score' not in st.session_state: st.session_state['writing_outline_score'] = 0
 
-# --- Helper xác định bài tập theo lớp ---
-def get_assignments(user_class_code):
+# --- SỬA LẠI: HÀM LẤY BÀI TẬP VỚI CỜ BÁO TRẠNG THÁI ---
+def get_assignments_status(user_class_code):
     """
-    Trả về danh sách bài tập (Speaking, Reading, Writing) dựa trên mã lớp.
+    Trả về (config, found)
+    - config: Dict bài tập hoặc dict rỗng
+    - found: True nếu lớp có trong danh sách cấu hình, False nếu không tìm thấy (lớp lạ)
     """
-    # Tìm config dựa trên prefix (VD: PLA1601 -> khớp với key "PLA")
     for prefix, config in HOMEWORK_CONFIG.items():
         if user_class_code.startswith(prefix):
-            return config
-    # Nếu không tìm thấy, trả về rỗng (hoặc mặc định)
-    return {"Speaking": [], "Reading": [], "Writing": []}
+            return config, True
+    return {"Speaking": [], "Reading": [], "Writing": []}, False
 
 def login():
     st.markdown("<div style='text-align: center; margin-top: 50px;'><h1>MR. TAT LOC IELTS CLASS</h1></div>", unsafe_allow_html=True)
