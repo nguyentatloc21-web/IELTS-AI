@@ -4,6 +4,7 @@ import json
 import base64
 import re
 import time
+import random
 import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -1057,7 +1058,7 @@ else:
     elif menu == "🗣️ Speaking":
         st.title("Luyện Tập Speaking")
         
-        tab_class, tab_forecast = st.tabs(["📚 Bài Tập Trên Lớp", "🔮 Luyện Đề Forecast Q1/2026"])
+        tab_class, tab_forecast = st.tabs(["Bài Tập Trên Lớp", "Luyện Đề Forecast Q1/2026"])
         
         # === TAB 1: BÀI TẬP TRÊN LỚP (CŨ) ===
         with tab_class:
@@ -1168,130 +1169,7 @@ else:
                                 * **Lý do:** ...
                                 """
                                     # Gọi API
-                                    text_result = call_gemini(prompt, audio_data=audio_b64)
-                                    
-                                    if text_result:
-                                        proc["result"] = text_result
-                                        proc["error"] = False
-                                        st.session_state['speaking_attempts'][question] = attempts + 1
-                                        save_speaking_log(user['name'], user['class'], lesson_choice, question, text_result)
-                                        st.rerun() # Rerun để ẩn nút Retry và hiện kết quả
-                                    else:
-                                        proc["error"] = True # Đánh dấu lỗi
-                                        st.rerun() # Rerun để hiện nút Retry
-                                except Exception as e:
-                                    st.error(f"Lỗi không xác định: {e}")
-                    
-                    # 4. Hiển thị kết quả (Nếu đã có)
-                    if proc["result"]:
-                        st.markdown(proc["result"])
-            else:
-                st.warning("⛔ Đã hết 5 lượt trả lời.")
-        else:
-            st.info("Bài học này chưa cập nhật.")
-
-    # --- MODULE 1: SPEAKING (CHIA 2 TAB) ---
-    elif menu == "🗣️ Speaking":
-        st.title("Luyện Tập Speaking")
-        
-        tab_class, tab_forecast = st.tabs(["📚 Bài Tập Trên Lớp", "🔮 Luyện Đề Forecast Q1/2026"])
-        
-        # === TAB 1: BÀI TẬP TRÊN LỚP (CŨ) ===
-        with tab_class:
-            col1, col2 = st.columns([1, 2])
-            with col1:
-                lesson_choice = st.selectbox("Chọn bài học:", SPEAKING_MENU, key="class_lesson")
-            
-            if lesson_choice in SPEAKING_CONTENT:
-                with col2:
-                    q_list = SPEAKING_CONTENT[lesson_choice]
-                    question = st.selectbox("Câu hỏi:", q_list, key="class_q")
-                
-                # Logic cũ (Record & Feedback ngay lập tức)
-                attempts = st.session_state['speaking_attempts'].get(question, 0)
-                remaining = 5 - attempts
-                
-                st.markdown(f"**Topic:** {question}")
-                
-                if remaining > 0:
-                    st.info(f"⚡ Bạn còn **{remaining}** lượt trả lời cho câu này.")
-                    audio = st.audio_input("Ghi âm câu trả lời:", key=f"rec_class_{question}")
-                    
-                    if audio:
-                        # ... (Logic xử lý audio cũ giữ nguyên) ...
-                        audio.seek(0)
-                        audio_bytes = audio.read()
-                        audio_sig = hash(audio_bytes)
-                        state_key = f"proc_class_{question}"
-                        if state_key not in st.session_state: st.session_state[state_key] = {"sig": None, "result": None}
-                        proc = st.session_state[state_key]
                         
-                        if proc["sig"] != audio_sig:
-                            if len(audio_bytes) < 1000: st.warning("File quá ngắn.")
-                            else:
-                                with st.spinner("Đang chấm điểm..."):
-                                    audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
-                                # GỌI AI CHẤM NGẦM (ẨN)
-                                    prompt = f"""Role: Examiner. Assess IELTS Speaking Part 1 about '{data['p1_topic']}'. Transcript EXACTLY what user said (no auto-correct). Give Band Score & Feedback.
-                                ## GRADING RUBRIC (TIÊU CHÍ PHÂN LOẠI CỐT LÕI):
-
-                                * **BAND 9 (Native-like):**
-                                * **Fluency:** Trôi chảy tự nhiên, không hề vấp váp.
-                                * **Vocab:** Chính xác tuyệt đối, tinh tế.
-                                * **Pronunciation:** Hoàn hảo. Transcript sạch bóng, không có bất kỳ từ nào sai ngữ cảnh hay vô nghĩa.
-
-                                * **BAND 8 (Rất tốt):**
-                                * **Fluency:** Mạch lạc, hiếm khi lặp lại.
-                                * **Vocab:** Dùng điêu luyện Idioms/từ hiếm.
-                                * **Pronunciation:** Dễ hiểu xuyên suốt. Ngữ điệu tốt. Transcript chính xác 99%.
-
-                                * **BAND 7 (Tốt - Target):**
-                                * **Fluency:** Nói dài dễ dàng. Từ nối linh hoạt.
-                                * **Vocab:** Dùng được Collocation tự nhiên.
-                                * **Grammar:** Thường xuyên có câu phức không lỗi.
-                                * **Pronunciation:** Dễ hiểu. *(Lưu ý: Chấp nhận một vài lỗi nhỏ, nhưng nếu Transcript xuất hiện từ lạ/sai ngữ cảnh, hãy trừ điểm nhẹ).*
-
-                                * **BAND 6 (Khá):**
-                                * **Fluency:** Đôi khi mất mạch, từ nối máy móc.
-                                * **Vocab:** Đủ để bàn luận, biết Paraphrase.
-                                * **Grammar:** Có dùng câu phức nhưng thường xuyên sai.
-                                * **Pronunciation:** Rõ ràng phần lớn thời gian. *(Lưu ý: Nếu thấy từ vựng bị biến đổi thành từ khác nghe na ná - Sound-alike words - hoặc 1-2 đoạn vô nghĩa, hãy đánh dấu là Lỗi Phát Âm).*
-
-                                * **BAND 5 (Trung bình):**
-                                * **Fluency:** Ngắt quãng nhiều, lặp từ.
-                                * **Grammar:** Chỉ đúng khi dùng câu đơn.
-                                * **Pronunciation:** *(Dấu hiệu nhận biết: Transcript thường xuyên xuất hiện các từ vô nghĩa hoặc sai hoàn toàn ngữ cảnh do máy không nhận diện được âm).*
-
-                                * **BAND 4 (Hạn chế):**
-                                * **Fluency:** Câu cụt, ngắt quãng dài.
-                                * **Pronunciation:** Khó hiểu. Transcript gãy vụn, chứa nhiều từ không liên quan đến chủ đề.
-                                ## OUTPUT FORMAT (Vietnamese Markdown):
-                                Trả về kết quả chi tiết:
-
-                                ### TRANSCRIPT:
-                                "[Ghi lại chính xác từng âm thanh nghe được. Nếu học viên nói sai ngữ pháp hoặc phát âm sai từ nào, HÃY GHI LẠI Y NGUYÊN LỖI ĐÓ. Ví dụ: nói 'sink' thay vì 'think', hãy ghi 'sink'. TUYỆT ĐỐI KHÔNG TỰ ĐỘNG SỬA THÀNH CÂU ĐÚNG]"
-
-                                ### KẾT QUẢ: [Score - format 5.0, 5.5]
-
-                                ### PHÂN TÍCH CHI TIẾT:
-                                1. **Fluency & Coherence:** [Nhận xét độ trôi chảy, xử lý các chỗ ngắt ngứ, từ nối và cách phát triển ý logic, trọng tâm câu trả lời]
-                                2. **Lexical Resource:** [Nhận xét vốn từ, các idiomatic language dùng được liên quan đến topic câu hỏi]
-                                3. **Grammar:** [Nhận xét cấu trúc câu, ngữ pháp]
-                                4. **Pronunciation:** [Nhận xét phát âm, trọng âm, chunking, âm đuôi dựa trên file ghi âm]
-
-                                ### CẢI THIỆN (NÂNG BAND):
-                                *(Chỉ chọn ra tối đa 3-5 lỗi sai lớn nhất hoặc câu diễn đạt vụng về/Việt-lish nhất để sửa cho tự nhiên hơn. **TUYỆT ĐỐI KHÔNG** sửa những câu đã đúng/ổn).*
-
-                                **Lỗi 1 (Grammar/Word Choice):**
-                                * **Gốc:** "[Trích văn bản gốc]"
-                                * **Sửa:** "[Viết lại tự nhiên hơn - Natural Speaking]"
-                                * **Lý do:** [Giải thích ngắn gọn, nghĩa tiếng Việt]
-
-                                **Lỗi 2 (Unnatural Phrasing):**
-                                * **Gốc:** "..."
-                                * **Sửa:** "..."
-                                * **Lý do:** ...
-                                """
                                     text_result = call_gemini(prompt, audio_data=audio_b64)
                                     if text_result:
                                         proc["result"] = text_result
@@ -1303,7 +1181,7 @@ else:
                 else: st.warning("Hết lượt.")
             else: st.info("Chưa có bài.")
 
-         # === TAB 2: FORECAST & LUYỆN TẬP (MỚI) ===
+        # === TAB 2: FORECAST & LUYỆN TẬP (MỚI) ===
         with tab_forecast:
             # Chọn Phần thi: Part 1, Part 2, Part 3
             part_mode = st.radio("Chọn phần thi:", ["Part 1", "Part 2", "Part 3"], horizontal=True)
@@ -1323,9 +1201,8 @@ else:
                     else:
                         with st.spinner("AI đang chấm điểm Part 1..."):
                             audio_b64_fc = base64.b64encode(audio_bytes_fc).decode('utf-8')
-                            # DÙNG PROMPT GỐC
-                        
-                            prompt full = f"""Role: Examiner. Assess IELTS Speaking response for Part 1 Question: "{q_p1}". Transcript EXACTLY what user said (no auto-correct). Give Band Score & Feedback.
+                                
+                            prompt_full= f"""Role: Examiner. Assess IELTS Speaking Part 1 about "{q_p1}". Transcript EXACTLY what user said (no auto-correct). Give Band Score & Feedback.
                                 ## GRADING RUBRIC (TIÊU CHÍ PHÂN LOẠI CỐT LÕI):
 
                                 * **BAND 9 (Native-like):**
