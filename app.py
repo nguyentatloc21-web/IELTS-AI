@@ -209,6 +209,25 @@ CLASS_CONFIG = {
     "ELITE1912": {"level": "6.5 - 7.0", "desc": "Lớp Elite"}
 }
 
+HOMEWORK_CONFIG = {
+    "PLA": {
+        "Speaking": ["Lesson 1: Work & Study", "Lesson 2: Habits & Lifestyle"],
+        "Reading":  ["Lesson 2: Marine Chronometer", "Lesson 3: Australian Agricultural Innovations"],
+        "Writing":  [] 
+    },
+    "ELITE": {
+        "Speaking": [], 
+        "Reading":  [], 
+        "Writing":  ["Lesson 3: Education & Society"]
+    },
+    "DIA": {
+        "Speaking": [], "Reading": [], "Writing": []
+    },
+    "MAS": {
+        "Speaking": [], "Reading": [], "Writing": []
+    }
+}
+
 # --- FORECAST DATA QUÝ 1 2026 ---
 FORECAST_PART1 = {
     "Views": ["Do you like taking pictures of different views?", "Do you prefer views in urban areas or rural areas?", "Do you prefer views in your own country or in other countries?", "Have you seen an unforgettable and beautiful view or scenery?"],
@@ -478,6 +497,7 @@ READING_CONTENT = {
     "Lesson 2: Marine Chronometer": {
         "status": "Active",
         "title": "Timekeeper: Invention of Marine Chronometer",
+        "intro_text": "Thời chưa có vệ tinh, các thủy thủ rất sợ đi biển xa vì họ không biết mình đang ở đâu. Cách duy nhất để xác định vị trí là phải biết giờ chính xác. Nhưng khổ nỗi, đồng hồ quả lắc ngày xưa cứ mang lên tàu rung lắc là chạy sai hết. Bài này kể về hành trình chế tạo ra chiếc đồng hồ đi biển đầu tiên, thứ đã cứu mạng hàng ngàn thủy thủ.",
         "text": """
 Up to the middle of the 18th century, the navigators were still unable to exactly identify the position at sea, so they might face a great number of risks such as the shipwreck or running out of supplies before arriving at the destination. Knowing one’s position on the earth requires two simple but essential coordinates, one of which is the longitude.
 
@@ -507,6 +527,7 @@ Most chronometer forerunners of that particular generation were English, but tha
     "Lesson 3: Australian Agricultural Innovations": {
         "status": "Active",
         "title": "Australian Agricultural Innovations: 1850 – 1900",
+        "intro_text": "Làm nông nghiệp ở Úc khó hơn nhiều so với ở Anh hay châu Âu vì đất đai ở đây rất khô và thiếu dinh dưỡng. Vào cuối thế kỷ 19, những người nông dân Úc đứng trước nguy cơ phá sản vì các phương pháp canh tác cũ không còn hiệu quả.\nBài đọc này sẽ cho các bạn thấy họ đã xoay sở như thế nào bằng công nghệ. Từ việc chế tạo ra chiếc cày đặc biệt có thể tự 'nhảy' qua gốc cây, cho đến việc lai tạo giống lúa mì chịu hạn. Chính những sáng kiến này đã biến nước Úc từ một nơi chỉ nuôi cừu thành một cường quốc xuất khẩu lúa mì thế giới.",
         "text": """
 During this period, there was a widespread expansion of agriculture in Australia. The selection system was begun, whereby small sections of land were parceled out by lot. Particularly in New South Wales, this led to conflicts between small holders and the emerging squatter class, whose abuse of the system often allowed them to take vast tracts of fertile land.
 
@@ -737,7 +758,19 @@ if 'reading_session' not in st.session_state: st.session_state['reading_session'
 if 'reading_highlight' not in st.session_state: st.session_state['reading_highlight'] = ""
 if 'writing_step' not in st.session_state: st.session_state['writing_step'] = 'outline' 
 if 'writing_outline_score' not in st.session_state: st.session_state['writing_outline_score'] = 0
-# ================= 3. LOGIC ĐĂNG NHẬP (ĐÃ CHUẨN HÓA TÊN) =================
+
+# --- Helper xác định bài tập theo lớp ---
+def get_assignments(user_class_code):
+    """
+    Trả về danh sách bài tập (Speaking, Reading, Writing) dựa trên mã lớp.
+    """
+    # Tìm config dựa trên prefix (VD: PLA1601 -> khớp với key "PLA")
+    for prefix, config in HOMEWORK_CONFIG.items():
+        if user_class_code.startswith(prefix):
+            return config
+    # Nếu không tìm thấy, trả về rỗng (hoặc mặc định)
+    return {"Speaking": [], "Reading": [], "Writing": []}
+
 def login():
     st.markdown("<div style='text-align: center; margin-top: 50px;'><h1>MR. TAT LOC IELTS CLASS</h1></div>", unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 1, 1])
@@ -747,7 +780,6 @@ def login():
             class_code = st.selectbox("Chọn Mã Lớp:", ["-- Chọn lớp --"] + list(CLASS_CONFIG.keys()))
             if st.form_submit_button("Vào Lớp Học"):
                 if name and class_code != "-- Chọn lớp --":
-                    # CHUẨN HÓA TÊN: "  nguyễn văn a  " -> "Nguyễn Văn A"
                     clean_name = normalize_name(name)
                     st.session_state['user'] = {"name": clean_name, "class": class_code, "level": CLASS_CONFIG[class_code]}
                     st.rerun()
@@ -1353,15 +1385,16 @@ else:
                                 """
                             res = call_gemini(prompt_full_p2, audio_data=audio_b64_p2)
                             if res: st.markdown(res)
-                            # --- LOGIC PART 3 ---
+            # --- LOGIC PART 3 ---
             else:
                 topic_p3 = st.selectbox("Chọn chủ đề (Part 3):", list(FORECAST_PART23.keys()))
                 data_p3 = FORECAST_PART23[topic_p3]
                 
-                st.write("**Part 3 Questions:**")
-                for q in data_p3['part3']: st.write(f"- {q}")
+                # Đã thêm phần chọn câu hỏi cho Part 3
+                q_p3 = st.selectbox("Chọn câu hỏi:", data_p3['part3'])
+                st.write(f"**Question:** {q_p3}")
                 
-                audio_fc_p3 = st.audio_input("Trả lời Part 3 (Trả lời tất cả câu hỏi trong 1 lần):", key=f"rec_fc_p3_{topic_p3}")
+                audio_fc_p3 = st.audio_input("Trả lời:", key=f"rec_fc_p3_{topic_p3}_{q_p3}")
                 if audio_fc_p3:
                     audio_fc_p3.seek(0)
                     audio_bytes_p3 = audio_fc_p3.read()
