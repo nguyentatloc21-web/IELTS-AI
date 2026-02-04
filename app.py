@@ -569,9 +569,21 @@ WRITING_CONTENT = {
 """
     }
 }
-SPEAKING_MENU = list(SPEAKING_CONTENT.keys()) + [f"Lesson {i}: (Sắp ra mắt)" for i in range(3, 11)]
-READING_MENU = [f"Lesson {i}" if i != 2 else "Lesson 2: Marine Chronometer" for i in range(1, 11)]
-WRITING_MENU = ["Lesson 3: Education & Society"]
+# --- HÀM TẠO MENU TỰ ĐỘNG (Auto-generate Menu with "Sắp ra mắt" status) ---
+def create_default_menu(content_dict, total_lessons=10):
+    menu = []
+    for i in range(1, total_lessons + 1):
+        # Tìm bài học tương ứng trong dict (Lesson X: ...)
+        lesson_key = next((k for k in content_dict.keys() if k.startswith(f"Lesson {i}:")), None)
+        if lesson_key:
+            menu.append(lesson_key)
+        else:
+            menu.append(f"Lesson {i}: (Sắp ra mắt)")
+    return menu
+
+SPEAKING_MENU = create_default_menu(SPEAKING_CONTENT)
+READING_MENU = create_default_menu(READING_CONTENT)
+WRITING_MENU = create_default_menu(WRITING_CONTENT)
 # ================= 2. HỆ THỐNG & API =================
 st.set_page_config(page_title="Mr. Tat Loc IELTS Portal", page_icon="🎓", layout="wide")
 
@@ -793,6 +805,27 @@ if 'user' not in st.session_state or st.session_state['user'] is None:
 else:
     user = st.session_state['user']
     
+    # --- FIX: LOGIC GIAO BÀI TẬP THEO LỚP ---
+    assigned_homework = get_assignments(user['class'])
+    
+    # 1. Speaking
+    if assigned_homework["Speaking"]:
+        current_speaking_menu = assigned_homework["Speaking"]
+    else:
+        current_speaking_menu = SPEAKING_MENU 
+
+    # 2. Reading
+    if assigned_homework["Reading"]:
+        current_reading_menu = assigned_homework["Reading"]
+    else:
+        current_reading_menu = READING_MENU
+
+    # 3. Writing
+    if assigned_homework["Writing"]:
+        current_writing_menu = assigned_homework["Writing"]
+    else:
+        current_writing_menu = WRITING_MENU 
+
     with st.sidebar:
         st.write(f"👤 **{user['name']}**")
         st.caption(f"Lớp: {user['class']} | Level: {user['level']['level']}")
@@ -830,7 +863,8 @@ else:
     elif menu == "✍️ Writing":
         st.title("✍️ Luyện Tập Writing (Task 2)")
         
-        lesson_w = st.selectbox("Chọn bài viết:", WRITING_MENU)
+        # --- Sửa: Dùng Menu được phân quyền ---
+        lesson_w = st.selectbox("Chọn bài viết:", current_writing_menu)
         
         # Chỉ lớp ELITE mới thấy bài này (ví dụ)
         if "Lesson 3" in lesson_w:
@@ -1096,7 +1130,8 @@ else:
         with tab_class:
             col1, col2 = st.columns([1, 2])
             with col1:
-                lesson_choice = st.selectbox("Chọn bài học:", SPEAKING_MENU, key="class_lesson")
+                # --- Sửa: Dùng Menu được phân quyền ---
+                lesson_choice = st.selectbox("Chọn bài học:", current_speaking_menu, key="class_lesson")
             
             if lesson_choice in SPEAKING_CONTENT:
                 with col2:
@@ -1472,11 +1507,16 @@ else:
         st.title("📖 Luyện Reading & Từ Vựng")
         
         # --- CẬP NHẬT MENU DYNAMIC (ĐÃ SỬA LỖI MẤT BÀI 3) ---
-        # Đảm bảo bài Lesson 3 luôn hiển thị đúng
-        reading_options = [
-            "Lesson 2: Marine Chronometer",
-            "Lesson 3: Australian Agricultural Innovations"
-        ] + [f"Lesson {i}" for i in range(1, 11) if i not in [2, 3]]
+        # --- Sửa: Dùng Menu được phân quyền ---
+        # Kiểm tra nếu lớp này có bài reading được giao
+        if assigned_homework["Reading"]:
+             reading_options = assigned_homework["Reading"]
+        else:
+             # Nếu không (hoặc danh sách rỗng), hiển thị mặc định
+             reading_options = [
+                "Lesson 2: Marine Chronometer",
+                "Lesson 3: Australian Agricultural Innovations"
+             ] + [f"Lesson {i}" for i in range(1, 11) if i not in [2, 3]]
         
         lesson_choice = st.selectbox("Chọn bài đọc:", reading_options)
         
