@@ -860,16 +860,16 @@ else:
                 st.dataframe(lb_w.style.format({"Điểm Writing (TB)": "{:.2f}"}), use_container_width=True)
             else: st.info("Chưa có dữ liệu.")
 
-    # --- MODULE 5: WRITING (NEW & POLISHED) ---
+    # --- MODULE 5: WRITING ---
     elif menu == "✍️ Writing":
         st.title("✍️ Luyện Tập Writing (Task 2)")
         
-        # --- Sửa: Dùng Menu được phân quyền ---
         lesson_w = st.selectbox("Chọn bài viết:", current_writing_menu)
         
-        # Chỉ lớp ELITE mới thấy bài này (ví dụ)
-        if "Lesson 3" in lesson_w:
-            data_w = WRITING_CONTENT["Lesson 3: Education & Society"]
+        if "(Chưa có bài tập)" in lesson_w:
+            st.info("Bài này chưa được giao.")
+        elif lesson_w in WRITING_CONTENT:
+            data_w = WRITING_CONTENT[lesson_w]
             st.info(f"### TOPIC: {data_w['question']}")
             
 # --- PHẦN 1: CHECKLIST & OUTLINE ---
@@ -1121,20 +1121,19 @@ else:
 
         else: st.warning("Bài này chưa mở.")
     
-    # --- MODULE 1: SPEAKING (CHIA 2 TAB) ---
+    # --- MODULE 1: SPEAKING ---
     elif menu == "🗣️ Speaking":
         st.title("Luyện Tập Speaking")
-        
         tab_class, tab_forecast = st.tabs(["Bài Tập Trên Lớp", "Luyện Đề Forecast Q1/2026"])
         
-        # === TAB 1: BÀI TẬP TRÊN LỚP (CŨ) ===
         with tab_class:
             col1, col2 = st.columns([1, 2])
             with col1:
-                # --- Sửa: Dùng Menu được phân quyền ---
                 lesson_choice = st.selectbox("Chọn bài học:", current_speaking_menu, key="class_lesson")
             
-            if lesson_choice in SPEAKING_CONTENT:
+            if "(Chưa có bài tập)" in lesson_choice:
+                st.info("Bài này chưa được giao.")
+            elif lesson_choice in SPEAKING_CONTENT:
                 with col2:
                     q_list = SPEAKING_CONTENT[lesson_choice]
                     question = st.selectbox("Câu hỏi:", q_list, key="class_q")
@@ -1503,30 +1502,22 @@ else:
                             res = call_gemini(prompt_full_p3, audio_data=audio_b64_p3)
                             if res: st.markdown(res)
 
-    # --- MODULE 2: READING (SPLIT VIEW & REALTIME TIMER) ---
+    # --- MODULE 2: READING ---
     elif menu == "📖 Reading":
-        st.title("📖 Luyện Reading & Từ Vựng")
+        st.title("📖 Luyện Reading")
         
-        # --- CẬP NHẬT MENU DYNAMIC (ĐÃ SỬA LỖI MẤT BÀI 3) ---
-        # --- Sửa: Dùng Menu được phân quyền ---
-        # Kiểm tra nếu lớp này có bài reading được giao
-        if assigned_homework["Reading"]:
-             reading_options = assigned_homework["Reading"]
-        else:
-             # Nếu không (hoặc danh sách rỗng), hiển thị mặc định
-             reading_options = [
-                "Lesson 2: Marine Chronometer",
-                "Lesson 3: Australian Agricultural Innovations"
-             ] + [f"Lesson {i}" for i in range(1, 11) if i not in [2, 3]]
+        # --- MENU READING CHUẨN XÁC ---
+        lesson_choice = st.selectbox("Chọn bài đọc:", current_reading_menu)
         
-        lesson_choice = st.selectbox("Chọn bài đọc:", reading_options)
+        # Xử lý khi chọn vào mục "Chưa có bài tập"
+        if "(Chưa có bài tập)" in lesson_choice:
+            st.info("Bài này chưa được giao.")
+            st.stop() # Dừng xử lý bên dưới
         
         # Reset session khi đổi bài
         if 'current_reading_lesson' not in st.session_state or st.session_state['current_reading_lesson'] != lesson_choice:
             st.session_state['current_reading_lesson'] = lesson_choice
             st.session_state['reading_session'] = {'status': 'intro', 'mode': None, 'end_time': None}
-            st.session_state['reading_highlight'] = ""
-            if 'reading_intro_text' in st.session_state: del st.session_state['reading_intro_text']
 
         if lesson_choice in READING_CONTENT:
             data = READING_CONTENT[lesson_choice]
