@@ -1,0 +1,1853 @@
+import streamlit as st
+import requests
+import json
+import base64
+import re
+import time
+import pandas as pd
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime, timedelta
+import streamlit.components.v1 as components
+
+# ================= 0. HÀM HỖ TRỢ (TIỆN ÍCH) =================
+def get_current_time_str():
+    """Trả về thời gian hiện tại định dạng dễ đọc: DD/MM/YYYY HH:MM:SS"""
+    return datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+
+def normalize_name(name):
+    """
+    Chuẩn hóa tên học viên:
+    - Xóa khoảng trắng thừa ở đầu/cuối và giữa các từ.
+    - Viết hoa chữ cái đầu mỗi từ.
+    VD: "  nguyễn   văn  a " -> "Nguyễn Văn A"
+    """
+    if not name: return ""
+    # Tách các từ, bỏ khoảng trắng thừa, viết hoa chữ đầu, rồi ghép lại
+    return " ".join(name.strip().split()).title()
+
+# ================= 1. KẾT NỐI GOOGLE SHEETS (DATABASE) =================
+def connect_gsheet():
+    """Kết nối Google Sheets an toàn"""
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        
+        if "gcp_service_account" in st.secrets:
+            creds_dict = dict(st.secrets["gcp_service_account"])
+        elif "private_key" in st.secrets:
+            creds_dict = {k: v for k, v in st.secrets.items() if k in ["type", "project_id", "private_key_id", "private_key", "client_email", "client_id", "auth_uri", "token_uri", "auth_provider_x509_cert_url", "client_x509_cert_url"]}
+        else:
+            return None
+
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        sheet = client.open("IELTS_DB") 
+        return sheet
+        
+    except Exception as e:
+        print(f"DB Error: {e}")
+        return None
+
+def save_speaking_log(student, class_code, lesson, question, full_feedback):
+    """Lưu điểm Speaking"""
+    try:
+        sheet = connect_gsheet()
+        if sheet:
+            try:
+                ws = sheet.worksheet("Speaking_Logs")
+            except:
+                ws = sheet.add_worksheet(title="Speaking_Logs", rows="1000", cols="10")
+                ws.append_row(["Timestamp", "Student", "Class", "Lesson", "Question", "Band_Short", "Score_Num", "Full_Feedback"])
+            
+            score_num = 0.0
+            band_short = "N/A"
+            match = re.search(r"(?:Band Score|KẾT QUẢ|BAND|Band).*?(\d+\.?\d*)", full_feedback, re.IGNORECASE)
+            if match:
+                try:
+                    score_num = float(match.group(1))
+                    band_short = str(score_num)
+                except: pass
+            
+            if score_num == 0.0:
+                first_line = full_feedback.split('\n')[0]
+                match_fallback = re.search(r"(\d+\.?\d*)", first_line)
+                if match_fallback:
+                    score_num = float(match_fallback.group(1))
+                    band_short = str(score_num)
+
+            ws.append_row([str(datetime.now()), student, class_code, lesson, question, band_short, score_num, full_feedback])
+            st.toast("✅ Đã lưu kết quả!", icon="💾")
+    except Exception as e:
+        print(f"Save Error: {e}")
+
+# --- ĐÃ SỬA LẠI HÀM NÀY ĐỂ NHẬN THAM SỐ MODE ---
+def save_reading_log(student, class_code, lesson, score, total, mode="Practice"):
+    try:
+        sheet = connect_gsheet()
+        if sheet:
+            try:
+                ws = sheet.worksheet("Reading_Logs")
+            except:
+                ws = sheet.add_worksheet(title="Reading_Logs", rows="1000", cols="10")
+                ws.append_row(["Timestamp", "Student", "Class", "Lesson", "Score", "Total", "Percentage", "Mode"])
+            
+            percentage = round((score / total) * 100, 1) if total > 0 else 0
+            ws.append_row([str(datetime.now()), student, class_code, lesson, score, total, percentage, mode])
+            st.toast("✅ Đã lưu kết quả Reading!", icon="💾")
+    except: pass
+
+def save_writing_log(student, class_code, lesson, topic, band_score, criteria_scores, feedback):
+    """Lưu điểm Writing"""
+    try:
+        sheet = connect_gsheet()
+        if sheet:
+            try: ws = sheet.worksheet("Writing_Logs")
+            except:
+                ws = sheet.add_worksheet(title="Writing_Logs", rows="1000", cols="10")
+                ws.append_row(["Timestamp", "Student", "Class", "Lesson", "Topic", "Overall_Band", "TR_CC_LR_GRA", "Feedback"])
+            
+            ws.append_row([str(datetime.now()), student, class_code, lesson, topic, band_score, str(criteria_scores), feedback])
+            st.toast("✅ Đã lưu bài Writing!", icon="💾")
+    except: pass
+
+def get_leaderboard(class_code):
+    try:
+        sheet = connect_gsheet()
+        if not sheet: return None, None, None
+
+        # 1. Speaking
+        try:
+            ws_s = sheet.worksheet("Speaking_Logs")
+            data = ws_s.get_all_values()
+            
+            if len(data) > 1:
+                headers = data[0]
+                df_s = pd.DataFrame(data[1:], columns=headers)
+                
+                if 'Class' in df_s.columns:
+                    df_s = df_s[df_s['Class'] == class_code]
+                    
+                    if not df_s.empty:
+                        # --- FIX LỖI: Chuẩn hóa tên học viên trước khi Group ---
+                        if 'Student' in df_s.columns:
+                            df_s['Student'] = df_s['Student'].astype(str).apply(normalize_name)
+
+                        score_col = None
+                        for col in ['Score_Num', 'Band_Score', 'Band_Short', 'Score']:
+                            if col in df_s.columns:
+                                score_col = col
+                                break
+                        
+                        if score_col:
+                            def extract_float(val):
+                                try:
+                                    found = re.search(r"(\d+\.?\d*)", str(val))
+                                    return float(found.group(1)) if found else 0.0
+                                except: return 0.0
+
+                            df_s['Final_Score'] = df_s[score_col].apply(extract_float)
+                            df_s = df_s[df_s['Final_Score'] > 0]
+                            
+                            # Group by tên đã chuẩn hóa
+                            lb_s = df_s.groupby('Student')['Final_Score'].mean().reset_index()
+                            lb_s.columns = ['Học Viên', 'Điểm Speaking (TB)']
+                            lb_s = lb_s.sort_values(by='Điểm Speaking (TB)', ascending=False).head(10)
+                        else: lb_s = None
+                    else: lb_s = None
+                else: lb_s = None
+            else: lb_s = None
+        except: lb_s = None 
+
+        # 2. Reading
+        try:
+            ws_r = sheet.worksheet("Reading_Logs")
+            df_r = pd.DataFrame(ws_r.get_all_records())
+            if not df_r.empty and 'Class' in df_r.columns:
+                df_r = df_r[df_r['Class'] == class_code]
+                if not df_r.empty:
+                    # --- FIX LỖI: Chuẩn hóa tên ---
+                    if 'Student' in df_r.columns:
+                        df_r['Student'] = df_r['Student'].astype(str).apply(normalize_name)
+
+                    df_r['Score'] = pd.to_numeric(df_r['Score'], errors='coerce')
+                    lb_r = df_r.groupby('Student')['Score'].max().reset_index()
+                    lb_r.columns = ['Học Viên', 'Điểm Reading (Max)']
+                    lb_r = lb_r.sort_values(by='Điểm Reading (Max)', ascending=False).head(10)
+                else: lb_r = None
+            else: lb_r = None
+        except: lb_r = None
+
+        # 3. Writing
+        try:
+            ws_w = sheet.worksheet("Writing_Logs")
+            df_w = pd.DataFrame(ws_w.get_all_records())
+            if not df_w.empty and 'Class' in df_w.columns:
+                df_w = df_w[df_w['Class'] == class_code]
+                if not df_w.empty:
+                    # --- FIX LỖI: Chuẩn hóa tên ---
+                    if 'Student' in df_w.columns:
+                        df_w['Student'] = df_w['Student'].astype(str).apply(normalize_name)
+
+                    df_w['Overall_Band'] = pd.to_numeric(df_w['Overall_Band'], errors='coerce')
+                    lb_w = df_w.groupby('Student')['Overall_Band'].mean().reset_index()
+                    lb_w.columns = ['Học Viên', 'Điểm Writing (TB)']
+                    lb_w = lb_w.sort_values(by='Điểm Writing (TB)', ascending=False).head(10)
+                else: lb_w = None
+            else: lb_w = None
+        except: lb_w = None
+
+        return lb_s, lb_r, lb_w
+    except: return None, None, None
+
+# ================= 1. CẤU HÌNH & DỮ LIỆU (TEACHER INPUT) =================
+
+CLASS_CONFIG = {
+    "PLA1601": {"level": "3.0 - 4.0", "desc": "Lớp Platinum"},
+    "DIA2024": {"level": "4.0 - 5.0", "desc": "Lớp Diamond"},
+    "MAS0901": {"level": "5.0 - 6.0", "desc": "Lớp Master"},
+    "ELITE1912": {"level": "6.5 - 7.0", "desc": "Lớp Elite"}
+}
+
+# --- FORECAST DATA QUÝ 1 2026 ---
+FORECAST_PART1 = {
+    "Views": ["Do you like taking pictures of different views?", "Do you prefer views in urban areas or rural areas?", "Do you prefer views in your own country or in other countries?", "Have you seen an unforgettable and beautiful view or scenery?"],
+    "Childhood activities": ["What are your favourite activities?", "What were your favourite activities when you were a child?", "Did you prefer to do activities alone or with a group of people when you were a child?", "Are there any differences between the activities you liked when you were a child and those you like now?"],
+    "Life stages": ["Do you enjoy being the age you are now?", "What did you often do with your friends in your childhood?", "What do you think is the most important at the moment?", "Do you have any plans for the next five years?", "How do people remember each stage of their lives?", "At what age do you think people are the happiest?"],
+    "Building": ["Are there tall buildings near your home?", "Do you take photos of buildings?", "Is there a building that you would like to visit?"],
+    "Scenery": ["Do you look out the window at the scenery when travelling by bus or car?", "Do you prefer the mountains or the sea?", "Do you like to take scenery pictures?", "What are the most beautiful sights you have seen while travelling?"],
+    "Reading": ["Do you like reading?", "Do you prefer to read on paper or on a screen?", "When do you need to read carefully, and when not?", "Do you prefer scanning or detailed reading?"],
+    "Sports team": ["Have you ever been part of a sports team?", "Are team sports popular in your culture?", "Do you like watching team games? Why?", "What are the differences between team sports and individual sports?"],
+    "Walking": ["Do you walk a lot?", "Did you often go outside to have a walk when you were a child?", "Why do people like to walk in parks?", "Where would you like to take a long walk if you had the chance?", "Where did you go for a walk lately?"],
+    "Typing": ["Do you prefer typing or handwriting?", "Do you type on a desktop or laptop keyboard every day?", "When did you learn how to type on a keyboard?", "How do you improve your typing?"],
+    "Food": ["What is your favourite food?", "What kind of food did you like when you were young?", "Has your favourite food changed since you were a child?", "Do you eat different foods at different times of the year?"],
+    "Hobby": ["Do you have the same hobbies as your family members?", "Do you have a hobby that you’ve had since childhood?", "Did you have any hobbies when you were a child?", "Do you have any hobbies?"],
+    "Gifts": ["What gift have you received recently?", "Have you ever sent handmade gifts to others?", "Have you ever received a great gift?", "What do you consider when choosing a gift?", "Do you think you are good at choosing gifts?"],
+    "Day off": ["When was the last time you had a few days off?", "What do you usually do when you have days off?", "Do you usually spend your days off with your parents or with your friends", "What would you like to do if you had a day off tomorrow?"],
+    "Keys": ["Do you always bring a lot of keys with you?", "Have you ever lost your keys?", "Do you often forget the keys and lock yourself out?", "Do you think it’s a good idea to leave your keys with a neighbour?"],
+    "Morning time": ["Do you like getting up early in the morning?", "What do you usually do in the morning?", "What did you do in the morning when you were little? Why?", "Are there any differences between what you do in the morning now and what you did in the past?", "Do you spend your mornings doing the same things on both weekends and weekdays? Why?"],
+    "Dreams": ["Can you remember the dreams you had?", "Do you share your dreams with others?", "Do you think dreams have special meanings?", "Do you want to make your dreams come true?"],
+    "Pets and Animals": ["What’s your favourite animal? Why?", "Where do you prefer to keep your pet, indoors or outdoors?", "Have you ever had a pet before?", "What is the most popular animal in Vietnam?"],
+    "Doing something well": ["Do you have an experience when you did something well?", "Do you have an experience when your teacher thought you did a good job?", "Do you often tell your friends when they do something well?"],
+    "Rules": ["Are there any rules for students at your school?", "Do you think students would benefit more from more rules?", "Have you ever had a really dedicated teacher?", "Do you prefer to have more or fewer rules at school?"],
+    "Public places": ["Have you ever talked with someone you don’t know in public places?", "Do you wear headphones in public places?", "Would you like to see more public places near where you live?", "Do you often go to public places with your friends?"],
+    "Staying with old people": ["Have you ever worked with old people?", "Are you happy to work with people who are older than you?", "Do you enjoy spending time with old people?", "What are the benefits of being friends with or working with old people?"],
+    "Growing vegetables/fruits": ["Are you interested in growing vegetables and fruits?", "Is growing vegetables popular in your country?", "Do many people grow vegetables in your city?", "Do you think it’s easy to grow vegetables?", "Should schools teach students how to grow vegetables?"],
+    "Going out": ["Do you bring food or snacks with you when going out?", "Do you always take your mobile phone with you when going out?", "Do you often bring cash with you?", "How often do you use cash?"],
+    "Advertisements": ["Do you often see advertisements when you are on your phone or computer?", "Is there an advertisement that made an impression on you when you were a child?", "Do you see a lot of advertising on trains or other transport?", "Do you like advertisements?", "What kind of advertising do you like?"],
+    "Crowded place": ["Is the city where you live crowded?", "Is there a crowded place near where you live?", "Do you like crowded places?", "Do most people like crowded places?", "When was the last time you were in a crowded place?"],
+    "Chatting": ["Do you like chatting with friends?", "What do you usually chat about with friends?", "Do you prefer to chat with a group of people or with only one friend?", "Do you prefer to communicate face-to-face or via social media?", "Do you argue with friends?"],
+    "Friends": ["Is there a difference between where you meet friends now and where you used to meet them in the past?", "Why are some places suitable for meeting while others are not?", "Do you prefer to spend time with one friend or with a group of friends?", "Would you invite friends to your home?", "How important are friends to you?", "Do you often go out with your friends?", "Where do you often meet each other?", "What do you usually do with your friends?", "Do you have a friend you have known for a long time?"],
+    "The city you live in": ["Would you recommend your city to others?", "What’s the weather like where you live?", "Are there people of different ages living in this city?", "Are the people friendly in the city?", "Is the city friendly to children and old people?", "Do you often see your neighbors?", "What city do you live in?", "Do you like this city? Why?", "How long have you lived in this city?", "Are there big changes in this city?", "Is this city your permanent residence?"],
+    "Shoes": ["Do you like buying shoes? How often?", "Have you ever bought shoes online?", "How much money do you usually spend on shoes?", "Which do you prefer, fashionable shoes or comfortable shoes?"],
+    "Museums": ["Do you think museums are important?", "Are there many museums in your hometown?", "Do you often visit museums?", "When was the last time you visited a museum?"],
+    "Having a break": ["How often do you take a rest or a break?", "What do you usually do when you are resting?", "Do you take a nap when you are taking your rest?", "How do you feel after taking a nap?"],
+    "Borrowing/lending things": ["Do you mind if others borrow money from you?", "How do you feel when people don’t return things they borrowed from you?", "Do you like to lend things to others?", "Have you ever borrowed money from others?", "Have you borrowed books from others?"],
+    "Sharing things": ["Who is the first person you would like to share good news with?", "Do you prefer to share news with your friends or your parents?", "Do you have anything to share with others recently?", "What kind of things are not suitable for sharing?", "What kind of things do you like to share with others?", "Did your parents teach you to share when you were a child?"],
+    "Plants": ["Do you keep plants at home?", "What plant did you grow when you were young?", "Do you know anything about growing a plant?", "Do Chinese people send plants as gifts?"],
+    "Work or studies": ["What subjects are you studying?", "Do you like your subject?", "Why did you choose to study that subject?", "Do you think that your subject is popular in your country?", "Do you have any plans for your studies in the next five years?", "What are the benefits of being your age?", "Do you want to change your major?", "Do you prefer to study in the mornings or in the afternoons?", "How much time do you spend on your studies each week?", "Are you looking forward to working?", "What technology do you use when you study?", "What changes would you like to see in your school?", "What work do you do?", "Why did you choose to do that type of work (or that job)?", "Do you like your job?", "What requirements did you need to meet to get your current job?", "Do you have any plans for your work in the next five years?", "What do you think is the most important at the moment?", "Do you want to change to another job?", "Do you miss being a student?", "What technology do you use at work?", "Who helps you the most? And how?"],
+    "Home & Accommodation": ["Who do you live with?", "Do you live in an apartment or a house?", "What part of your home do you like the most?", "What’s the difference between where you are living now and where you have lived in the past?", "What kind of house or apartment do you want to live in in the future?", "What room does your family spend most of the time in?", "What do you usually do in your apartment?", "What kinds of accommodation do you live in?", "Do you plan to live there for a long time?", "Can you describe the place where you live?", "Do you prefer living in a house or an apartment?", "Please describe the room you live in.", "What’s your favorite room in your apartment or house？", "What makes you feel pleasant in your home？", "How long have you lived there?", "Do you think it is important to live in a comfortable environment？"],
+    "Hometown": ["Have you learned anything about the history of your hometown?", "Did you learn about the culture of your hometown in your childhood?", "Is that a big city or a small place?", "Do you like your hometown?", "What do you like (most) about your hometown?", "Is there anything you dislike about it?", "How long have you been living there?", "Do you like living there?", "Please describe your hometown a little.", "What’s your hometown famous for?", "Did you learn about the history of your hometown at school?", "Are there many young people in your hometown?", "Is your hometown a good place for young people to pursue their careers?"],
+    "The area you live in": ["Do you live in a noisy or a quiet area?", "Are the people in your neighborhood nice and friendly?", "Do you like the area that you live in?", "Where do you like to go in that area?", "Do you know any famous people in your area?", "What are some changes in the area recently?", "Do you know any of your neighbours?"]
+}
+
+FORECAST_PART23 = {
+    "Give advice": {
+        "cue_card": "Describe a time when you gave advice to others.\nYou should say:\n- When it was\n- To whom you gave the advice\n- What the advice was\n- And explain why you gave the advice",
+        "part3": ["Should people prepare before giving advice?", "Is it good to ask advice from strangers online?", "What are the personalities of people whose job is to give advice to others?", "What are the problems if you ask too many people for advice?", "Why do some people think it is better to ask for advice from friends than from parents?", "When would old people ask young people for advice?"]
+    },
+    "Person helps others": {
+        "cue_card": "Describe a person who often helps others.\nYou should say:\n- Who this person is\n- How often he/she helps others\n- How/why he/she helps others\n- And how you feel about this person",
+        "part3": ["Do you think schools should teach children to do household chores?", "Why are employees reluctant to ask their managers for help?", "What can children do to help their parents?", "Should children help their parents with household chores?", "What kind of help do people need when looking for a new job?", "Who should people ask for help, colleagues or family members?"]
+    },
+    "Bad music event": {
+        "cue_card": "Describe an event you attended in which you didn’t enjoy the music played.\nYou should say:\n- What it was\n- Who you went with\n- Why you decided to go there\n- And explain why you didn’t enjoy it",
+        "part3": ["What kind of music events do people like today?", "Do you think children should receive some musical education?", "What are the differences between old and young people’s music preferences?", "What kind of music events are there in your country?"]
+    },
+    "Learned without teacher": {
+        "cue_card": "Describe one of your friends who learned something without a teacher.\nYou should say:\n- Who he/she is\n- What he/she learned\n- Why he/she learned this\n- And explain whether it would be easier to learn from a teacher",
+        "part3": ["Is it necessary to keep learning after graduating from school?", "Should teachers make learning in their classes fun?", "Do you think there are too many subjects for students to learn?", "Is it better to focus on a few subjects or to learn many subjects?", "Do you think enterprises should provide training for their employees?", "Do you think it is good for older adults to continue learning?"]
+    },
+    "Technology (not phone)": {
+        "cue_card": "Describe a piece of technology (not a phone) that you would like to own.\nYou should say:\n- What it is\n- How much it costs\n- How you knew it\n- And explain why you would like to own it",
+        "part3": ["What are the differences between the technology of the past and that of today?", "What technology do young people like to use?", "What are the differences between online and face-to-face communication?", "Do you think technology has changed the way people communicate?", "What negative effects does technology have on people’s relationships?", "What are the differences between making friends in real life and online?"]
+    },
+    "Perfect job": {
+        "cue_card": "Describe a perfect job you would like to have in the future.\nYou should say:\n- What it is\n- How you knew it\n- What you need to learn to get this job\n- And explain why you think it is a perfect job for you",
+        "part3": ["What kind of job can be called a ‘dream job’?", "What jobs do children want to do when they grow up?", "Do people’s ideal jobs change as they grow up?", "What should people consider when choosing jobs?", "Is salary the main reason why people choose a certain job?", "What kind of jobs are the most popular in your country?"]
+    },
+    "Child drawing": {
+        "cue_card": "Describe a child who loves drawing/painting.\nYou should say:\n- Who he/she is\n- How/when you knew him/her\n- How often he/she draws/paints\n- And explain why you think he/she loves drawing/painting",
+        "part3": ["What is the right age for a child to learn drawing?", "Why do most children draw more often than adults do?", "Why do some people visit galleries or museums instead of viewing artworks online?", "Do you think galleries and museums should be free of charge?", "How do artworks inspire people?", "What are the differences between reading a book and visiting a museum?"]
+    },
+    "App or program": {
+        "cue_card": "Describe a program or app on your computer or phone.\nYou should say:\n- What it is\n- How often you use it\n- When/how you use it\n- When/how you found it\n- And explain how you feel about it",
+        "part3": ["What are the differences between old and young people when using apps?", "Why do some people not like using apps?", "What apps are popular in your country? Why?", "Should parents limit their children’s use of computer programs and computer games? Why and how?", "Do you think young people are more and more reliant on these programs?"]
+    },
+    "Person good at planning": {
+        "cue_card": "Describe a person who makes plans a lot and is good at planning.\nYou should say:\n- Who he/she is\n- How you knew him/her\n- What plans he/she makes\n- And explain how you feel about this person",
+        "part3": ["Do you think it’s important to plan ahead?", "Do you think children should plan their future careers?", "Is making study plans popular among young people?", "Do you think choosing a college major is closely related to a person’s future career?"]
+    },
+    "Famous person": {
+        "cue_card": "Describe a famous person you would like to meet.\nYou should say:\n- Who he/she is\n- How you knew him/her\n- How/where you would like to meet him/her\n- And explain why you would like to meet him/ her",
+        "part3": ["What are the advantages and disadvantages of being a famous child?", "What can today’s children do to become famous?", "What can children do with their fame?", "Do people become famous because of their talent?"]
+    },
+    "Disappointing movie": {
+        "cue_card": "Describe a movie you watched recently that you felt disappointed about.\nYou should say:\n- When it was\n- Why you didn’t like it\n- Why you decided to watch it\n- And explain why you felt disappointed about it",
+        "part3": ["Do you believe movie reviews?", "What are the different types of films in your country?", "Are historical films popular in your country? Why?", "Do you think films with famous actors or actresses are more likely to become successful films?", "Why are Japanese animated films so popular?", "Should the director pay a lot of money to famous actors?"]
+    },
+    "Relax place": {
+        "cue_card": "Describe your favorite place in your house where you can relax.\nYou should say:\n- Where it is\n- What it is like\n- What you enjoy doing there\n- And explain why you feel relaxed at this place",
+        "part3": ["Why is it difficult for some people to relax?", "What are the benefits of doing exercise?", "Do people in your country exercise after work?", "What is the place where people spend most of their time at home?", "Do you think there should be classes for training young people and children how to relax?", "Which is more important, mental relaxation or physical relaxation?"]
+    },
+    "Item (not phone/computer)": {
+        "cue_card": "Describe something that you can’t live without (not a computer/phone).\nYou should say:\n- What it is\n- What you do with it\n- How it helps you in your life\n- And explain why you can’t live without it",
+        "part3": ["Why do all children like toys?", "Do you think it is good for a child to always take his or her favourite toy with them all the time?", "Why are children attracted to new things (such as electronics)?", "Why do some grown-ups hate to throw out old things (such as clothes)?", "Is the way people buy things affected? How?", "What do you think influences people to buy new things?"]
+    },
+    "Proud of family": {
+        "cue_card": "Describe a time when you felt proud of a family member.\nYou should say:\n- When it happened\n- Who the person is\n- What the person did\n- And explain why you felt proud of him/her",
+        "part3": ["When would parents feel proud of their children?", "Should parents reward children? Why and how?", "Is it good to reward children too often? Why?", "On what occasions would adults be proud of themselves?"]
+    },
+    "Trip vehicle": {
+        "cue_card": "Describe a bicycle/motorcycle/car trip you would like to go.\nYou should say:\n- Who you would like to go with\n- Where you would like to go\n- When you would like to go\n- And explain why you would like to go by bicycle/motorcycle/car",
+        "part3": ["Which form of vehicle is more popular in your country, bikes, cars or motorcycles?", "Do you think air pollution comes mostly from mobile vehicles?", "Do you think people need to change the way of transportation drastically to protect the environment?", "Why do people prefer to travel by car?", "How are the transportation systems in urban areas and rural areas different?"]
+    },
+    "Smiling occasion": {
+        "cue_card": "Describe an occasion when many people were smiling.\nYou should say:\n- When it happened\n- Who you were with\n- What happened\n- And explain why most people were smiling",
+        "part3": ["Do people smile more when they are younger or older?", "Do you think people who like to smile are more friendly?", "Why do most people smile in photographs?", "Do women smile more than men? Why?"]
+    },
+    "No mobile phone": {
+        "cue_card": "Describe an occasion when you were not allowed to use your mobile phone.\nYou should say:\n- When it was\n- Where it was\n- Why you were not allowed to use your mobile phone\n- And how you felt about it",
+        "part3": ["How do young and old people use mobile phones differently?", "What positive and negative impact do mobile phones have on friendship?", "Is it a waste of time to take pictures with mobile phones?", "Do you think it is necessary to have laws on the use of mobile phones?"]
+    },
+    "Important family item": {
+        "cue_card": "Describe something important that has been kept in your family for a long time.\nYou should say:\n- What it is\n- When your family had it\n- How your family got it\n- And explain why it is important to your family",
+        "part3": ["What things do families keep for a long time?", "What’s the difference between things valued by people in the past and today?", "What kinds of things are kept in museums?", "What’s the influence of technology on museums?"]
+    },
+    "Useful book": {
+        "cue_card": "Describe a book you read that you found useful.\nYou should say:\n- What it is\n- When you read it\n- Why you think it is useful\n- And explain how you felt about it",
+        "part3": ["What are the types of books that young people like to read?", "What should the government do to make libraries better?", "Do you think old people spend more time reading than young people?", "Which one is better, paper books or e-books?", "Have libraries changed a lot with the development of the internet?", "What should we do to prevent modern libraries from closing down?"]
+    },
+    "Popular person": {
+        "cue_card": "Describe a popular person.\nYou should say:\n- Who this person is\n- What kind of person he or she is\n- When you see him/her normally\n- And explain why you think this person is popular",
+        "part3": ["Why are some students popular in school?", "Is it important for a teacher to be popular?", "Do you think good teachers are always popular among students?", "What are the qualities of being a good teacher?", "Is it easier to become popular nowadays?", "Why do people want to be popular?"]
+    },
+    "Creative person": {
+        "cue_card": "Describe a creative person (e.g. an artist, a musician, an architect, etc.) you admire.\nYou should say:\n- Who he/she is\n- How you knew him/her\n- What his/her greatest achievement is\n- And explain why you think he/she is creative",
+        "part3": ["Do you think children should learn to play musical instruments?", "How do artists acquire inspiration?", "Do you think pictures and videos in news reports are important?", "What can we do to help children stay creative?", "How does drawing help to enhance children’s creativity?", "What kind of jobs require creativity?"]
+    },
+    "Long journey": {
+        "cue_card": "Describe a long journey you had and would like to take again.\nYou should say:\n- When/where you went\n- Who you had the journey with\n- Why you had the journey\n- And explain why you would like to have it again",
+        "part3": ["Do you think it is a good choice to travel by plane?", "What are the differences between group travelling and travelling alone?", "What do we need to prepare for a long journey?", "Why do some people like making long journeys?", "Why do some people prefer to travel in their own country?", "Why do some people prefer to travel abroad?"]
+    },
+    "Family business worker": {
+        "cue_card": "Describe a person you know who enjoys working for a family business (e.g. a shop, etc.).\nYou should say:\n- Who he/she is\n- What the business is\n- What his/her job is\n- And explain why he/she enjoys working there",
+        "part3": ["Would you like to start a family business?", "Would you like to work for a family business?", "Why do some people choose to start their own company?", "What are the advantages and disadvantages of family businesses?", "What family businesses do you know in your local area?", "What makes a successful family business?"]
+    },
+    "Wild animal": {
+        "cue_card": "Describe a wild animal that you want to learn more about.\nYou should say:\n- What it is\n- When/where you saw it\n- Why you want to learn more about it\n- And explain what you want to learn more about it",
+        "part3": ["Why should we protect wild animals?", "Why are some people more willing to protect wild animals than others?", "Do you think it’s important to take children to the zoo to see animals?", "Why do some people attach more importance to protecting rare animals?", "Should people educate children to protect wild animals?", "Is it more important to protect wild animals or the environment?"]
+    },
+    "Broke something": {
+        "cue_card": "Describe a time when you broke something.\nYou should say:\n- What it was\n- When/where that happened\n- How you broke it\n- And explain what you did after that",
+        "part3": ["What kind of things are more likely to be broken by people at home?", "What kind of people like to fix things by themselves?", "Do you think clothes produced in the factory are of better quality than those made by hand?", "Do you think handmade clothes are more valuable?", "Is the older generation better at fixing things?", "Do you think elderly people should teach young people how to fix things?"]
+    },
+    "Good friend": {
+        "cue_card": "Describe a good friend who is important to you.\nYou should say:\n- Who he/she is\n- How/where you got to know him/her\n- How long you have known each other\n- And explain why he/she is important to you",
+        "part3": ["How do children make friends at school?", "How do children make friends when they are not at school?", "Do you think it is better for children to have a few close friends or many casual friends?", "Do you think a child’s relationship with friends can be replaced by that with other people, like parents or other family members?", "What are the differences between friends made inside and outside the workplace?", "Do you think it’s possible for bosses and their employees to become friends?"]
+    },
+    "Friend good at music": {
+        "cue_card": "Describe a friend of yours who is good at music/singing.\nYou should say:\n- Who he/she is\n- When/where you listen to his/her music/singing\n- What kind of music/songs he/she is good at\n- And explain how you feel when listening to his music/singing",
+        "part3": ["What kind of music is popular in your country?", "What kind of music do young people like?", "What are the differences between young people’s and old people’s preferences in music?", "What are the benefits of children learning a musical instrument?", "Do you know what kind of music children like today?", "Do you think the government should invest more money in concerts?"]
+    },
+    "Great dinner": {
+        "cue_card": "Describe a great dinner you and your friends or family members enjoyed.\nYou should say:\n- What you had\n- Who you had the dinner with\n- What you talked about during the dinner\n- And explain why you enjoyed it",
+        "part3": ["Do people prefer to eat out at restaurants or eat at home during the Spring Festival?", "What food do you eat on special occasions, like during the Spring Festival or the Mid-autumn Festival?", "Why do people like to have meals together during important festivals?", "Is it a hassle to prepare a meal at home?", "What do people often talk about during meals?", "People are spending less and less time having meals with their families these days. Is this good or bad?"]
+    },
+    "Important decision": {
+        "cue_card": "Describe an important decision made with the help of other people.\nYou should say:\n- What the decision was\n- Why you made the decision\n- Who helped you make the decision\n- And how you felt about it",
+        "part3": ["What kind of decisions do you think are meaningful?", "What important decisions should be made by teenagers themselves?", "Why are some people unwilling to make quick decisions?", "Do people like to ask for advice more for their personal life or their work?", "Why do some people like to ask others for advice?"]
+    },
+    "Electricity off": {
+        "cue_card": "Describe a time when the electricity suddenly went off.\nYou should say:\n- When/where it happened\n- How long it lasted\n- What you did during that time\n- And explain how you felt about it",
+        "part3": ["Which is better, electric bicycles or ordinary bicycles?", "Do you think electric bicycles will replace ordinary bicycles in the future?", "Which is better, electric cars or petrol cars?", "How did people manage to live without electricity in the ancient world?", "Is it difficult for the government to replace all the petrol cars with electric cars?", "Do people use more electricity now than before?"]
+    },
+    "Exciting activity": {
+        "cue_card": "Describe an exciting activity you have tried for the first time.\nYou should say:\n- What it is\n- When/where you did it\n- Why you thought it was exciting\n- And explain how you felt about it",
+        "part3": ["Why are some people unwilling to try new things?", "Do you think fear stops people from trying new things?", "Why are some people keen on doing dangerous activities?", "Do you think that children adapt to new things more easily than adults?", "What can people learn from doing dangerous activities?", "What are the benefits of trying new things?"]
+    },
+    "Traditional story": {
+        "cue_card": "Describe an interesting traditional story.\nYou should say:\n- What the story is about\n- When/how you knew it\n- Who told you the story\n- And explain how you felt when you first heard it",
+        "part3": ["What kind of stories do children like?", "What are the benefits of listening to stories before bed?", "Why do most children like listening to stories before bedtime?", "What can children learn from stories?", "Do all stories for children have happy endings?", "Is a good storyline important for a movie?"]
+    },
+    "Old person interesting life": {
+        "cue_card": "Describe an old person who has an interesting life and you enjoy talking to him/her.\nYou should say:\n- Who this person is\n- Where he/she lives\n- What his/her life is like\n- What you like to talk about with him/her\n- And explain why you enjoy talking to him/her",
+        "part3": ["Should companies employ older workers?", "What do you think older people can contribute at work?", "Why do governments make retirement policies?", "When do you think is the best time to retire?", "Do you think people should spend more time with their grandparents?", "Is it beneficial to live with elderly people?"]
+    },
+    "Sky object": {
+        "cue_card": "Describe a time when you saw something in the sky (e.g. flying kites, birds, sunset, etc.).\nYou should say:\n- What you saw\n- Where/when you saw it/them\n- How long you saw it/them\n- And explain how you felt about the experience",
+        "part3": ["Would people be willing to get up early to watch and enjoy the sunrise?", "When would people watch the sky?", "Do many people pay attention to the shapes of stars?", "What do people usually see in the sky in the daytime?", "What are the differences between things people see in the sky in the daytime and at night?", "Why do some people like to watch stars at night?"]
+    },
+    "Positive change": {
+        "cue_card": "Describe a positive change that you have made recently in your daily routine.\nYou should say:\n- What the change is\n- How you have changed the routine\n- Why you think it is a positive change\n- And explain how you feel about the change",
+        "part3": ["What do people normally plan in their daily lives?", "Is time management very important in our daily lives?", "What changes would people often make?", "Do you think it is good to change jobs frequently?", "Who do you think would make changes more often, young people or old people?", "Who should get more promotion opportunities in the workplace, young people or older people?"]
+    },
+    "Good service": {
+        "cue_card": "Describe a time when you received good service in a shop/store.\nYou should say:\n- Where the shop is\n- When you went to the shop\n- What service you received from the staff\n- And explain how you felt about the service",
+        "part3": ["Why are shopping malls so popular in Vietnam?", "What are the advantages and disadvantages of shopping in small shops?", "Why do some people not like shopping in small shops?", "What are the differences between online shopping and in-store shopping?", "What are the advantages and disadvantages of shopping online?", "Can consumption drive economic growth?"]
+    },
+    "Natural place": {
+        "cue_card": "Describe a natural place (e.g. parks, mountains, etc.).\nYou should say:\n- Where this place is\n- How you knew this place\n- What it is like\n- And explain why you like to visit it",
+        "part3": ["What kind of people like to visit natural places?", "What are the differences between a natural place and a city?", "Do you think that going to the park is the only way to get close to nature?", "What can people gain from going to natural places?", "Are there any wild animals in the city?", "Do you think it is a good idea to let animals stay in local parks for people to see?"]
+    },
+    "Successful sportsperson": {
+        "cue_card": "Describe a successful sportsperson you admire.\nYou should say:\n- Who he/she is\n- What you know about him/her\n- What he/she is like in real life\n- What achievement he/she has made\n- And explain why you admire him/her",
+        "part3": ["Should students have physical education and do sports at school?", "What qualities should an athlete have?", "Is talent important in sports?", "Is it easy to identify children’s talents?", "What is the most popular sport in your country?", "Why are there so few top athletes?"]
+    },
+    "Science subject": {
+        "cue_card": "Describe an area/subject of science (biology, robotics, etc.) that you are interested in and would like to learn more about.\nYou should say:\n- Which area/subject it is\n- When and where you came to know this area/subject\n- How you get information about this area/subject\n- And explain why you are interested in this area/subject",
+        "part3": ["Why do some children not like learning science at school?", "Is it important to study science at school?", "Which science subject is the most important for children to learn?", "Should people continue to study science after graduating from school?", "How do you get to know about scientific news?", "Should scientists explain the research process to the public?"]
+    },
+    "Unusual meal": {
+        "cue_card": "Describe an unusual meal you had.\nYou should say:\n- When you had it\n- Where you had it\n- Whom you had it with\n- And explain why it was unusual",
+        "part3": ["What are the advantages and disadvantages of eating in restaurants?", "What fast food are there in your country?", "Do people eat fast food at home?", "Why do some people choose to eat out instead of ordering takeout?", "Do people in your country socialize in restaurants? Why?", "Do people in your country value food culture?"]
+    },
+    "Good habit": {
+        "cue_card": "Describe a good habit your friend has and you want to develop.\nYou should say:\n- Who your friend is\n- What habit he/she has\n- When you noticed this habit\n- And explain why you want to develop this habit",
+        "part3": ["How do we develop bad habits?", "What can we do to get rid of bad habits?", "What habits should children have?", "What should parents do to teach their children good habits?", "What influences do children with bad habits have on other children?", "Why do some habits change when people get older?"]
+    },
+    "Waited for special": {
+        "cue_card": "Describe a time when you waited for something special that would happen.\nYou should say:\n- What you waited for\n- Where you waited\n- Why it was special\n- And explain how you felt while you were waiting",
+        "part3": ["Why are some people unwilling to wait?", "Where do children learn to be patient, at home or at school?", "On what occasions do people usually need to wait?", "Who behave better when waiting, children or adults?", "Compared to the past, are people less patient now？Why?", "What are the positive and negative effects of waiting on society？"]
+    },
+    "Interesting social media": {
+        "cue_card": "Describe a time you saw something interesting on social media.\nYou should say:\n- When it was\n- Where you saw it\n- What you saw\n- And explain why you think it was interesting",
+        "part3": ["Why do people like to use social media?", "What kinds of things are popular on social media?", "What are the advantages and disadvantages of using social media?", "What do you think of making friends on social network?", "Are there any people who shouldn’t use social media?", "Do you think people spend too much time on social media?"]
+    },
+    "Natural talent": {
+        "cue_card": "Describe a natural talent (sports, music, etc.) you want to improve.\nYou should say:\n- What it is\n- When you discovered it\n- How you want to improve it\n- And how you feel about it",
+        "part3": ["Do you think artists with talents should focus on their talents?", "Is it possible for us to know whether children who are 3 or 4 years old will become musicians and painters when they grow up?", "Why do people like to watch talent shows？", "Do you think it is more interesting to watch famous people’s or ordinary people’s shows?"]
+    },
+    "Childhood toy": {
+        "cue_card": "Describe a toy you liked in your childhood.\nYou should say:\n- What kind of toy it is\n- When you received it\n- How you played it\n- And how you felt about it",
+        "part3": ["What’s the difference between the toys boys play with and girls play with?", "What are the advantages and disadvantages of modern toys?", "How do advertisements influence children?", "Should advertising aimed at kids be prohibited?", "What’s the difference between the toys kids play now and those they played in the past?", "Do you think parents should buy more toys for their kids or spend more time with them?"]
+    },
+    "Talked foreign language": {
+        "cue_card": "Describe the time when you first talked in a foreign language.\nYou should say:\n- Where you were\n- Who you were with\n- What you talked about\n- And explain how you felt about it",
+        "part3": ["Does learning a foreign language help in finding a job?", "Which stage of life do you think is the best for learning a foreign language?", "At what age should children start learning a foreign language?", "Which skill is more important, speaking or writing ?", "Does a person still need to learn other languages, if he or she is good at English?", "Do you think minority languages will disappear?"]
+    },
+    "Lost way": {
+        "cue_card": "Describe an occasion when you lost your way.\nYou should say:\n- Where you were\n- What happened\n- How you felt\n- And explain how you found your way",
+        "part3": ["Is a paper map still necessary?", "How do people react when they get lost?", "Why do some people get lost more easily than others?", "Do you think it is important to be able to read a map?", "Do you think it is important to do some preparation before you travel to new places?", "How can people find their way when they are lost?"]
+    },
+    "Apology": {
+        "cue_card": "Describe a time when someone apologized to you.\nYou should say:\n- When it was\n- Who this person is\n- Why he or she apologized to you\n- And how you felt about it",
+        "part3": ["Do you think every “sorry” is from the bottom of the heart?", "Are women better than men at recognizing emotions?", "On what occasion do people usually apologize to others?", "Do people in your country like to say “sorry”?", "Do you think people should apologize for anything wrong they do?", "Why do some people refuse to say “sorry” to others?"]
+    }
+}
+
+LISTENING_TOPICS = [
+    "Công nghệ (Technology & AI)", "Sức khỏe (Health & Fitness)", 
+    "Kinh doanh (Business & Startups)", "Du lịch (Travel & Culture)", 
+    "Tâm lý học (Psychology)", "Giáo dục (Education)", 
+    "Môi trường (Environment)", "Thể thao (Sports)"
+]
+
+SPEAKING_CONTENT = {
+    "Lesson 1: Work & Study": [
+        "Q1: Do you work or are you a student?",
+        "Q2: Is your daily routine busy?",
+        "Q3: Is there anything you dislike about your work/study?",
+        "Q4: Why did you choose your current job / major?",
+        "Q5: What are your plans for the future?"
+    ],
+    "Lesson 2: Habits & Lifestyle": [
+        "1. What is your daily routine like?",
+        "2. Are you a morning person or a night person?",
+        "3. Do you often eat breakfast at home or outside?",
+        "4. Do you have a healthy lifestyle?",
+        "5. What do you usually do in your free time?",
+        "6. Do you prefer spending time alone or with friends?",
+        "7. Is there any new hobby you want to try in the future?",
+        "8. How do you relax after a stressful day?"
+    ]
+}
+
+# READING: Lesson 2 Full Passage & Questions
+READING_CONTENT = {
+    "Lesson 2: Marine Chronometer": {
+        "status": "Active",
+        "title": "Timekeeper: Invention of Marine Chronometer",
+        "text": """
+Up to the middle of the 18th century, the navigators were still unable to exactly identify the position at sea, so they might face a great number of risks such as the shipwreck or running out of supplies before arriving at the destination. Knowing one’s position on the earth requires two simple but essential coordinates, one of which is the longitude.
+
+The longitude is a term that can be used to measure the distance that one has covered from one’s home to another place around the world without the limitations of naturally occurring baseline like the equator. To determine longitude, navigators had no choice but to measure the angle with the naval sextant between Moon centre and a specific star— lunar distance—along with the height of both heavenly bodies. Together with the nautical almanac, Greenwich Mean Time (GMT) was determined, which could be adopted to calculate longitude because one hour in GMT means 15-degree longitude. Unfortunately, this approach laid great reliance on the weather conditions, which brought great inconvenience to the crew members. Therefore, another method was proposed, that is, the time difference between the home time and the local time served for the measurement.
+
+Theoretically, knowing the longitude position was quite simple, even for the people in the middle of the sea with no land in sight. The key element for calculating the distance travelled was to know, at the very moment, the accurate home time. But the greatest problem is: how can a sailor know the home time at sea?
+
+The simple and again obvious answer is that one takes an accurate clock with him, which he sets to the home time before leaving. A comparison with the local time (easily identified by checking the position of the Sun) would indicate the time difference between the home time and the local time, and thus the distance from home was obtained. The truth was that nobody in the 18th century had ever managed to create a clock that could endure the violent shaking of a ship and the fluctuating temperature while still maintaining the accuracy of time for navigation.
+
+After 1714, as an attempt to find a solution to the problem, the British government offered a tremendous amount of £20,000, which were to be managed by the magnificently named ‘Board of Longitude’. If timekeeper was the answer (and there could be other proposed solutions, since the money wasn’t only offered for timekeeper), then the error of the required timekeeping for achieving this goal needed to be within 2.8 seconds a day, which was considered impossible for any clock or watch at sea, even when they were in their finest conditions.
+
+This award, worth about £2 million today, inspired the self-taught Yorkshire carpenter John Harrison to attempt a design for a practical marine clock. In the later stage of his early career, he worked alongside his younger brother James. The first big project of theirs was to build a turret clock for the stables at Brockelsby Park, which was revolutionary because it required no lubrication. Harrison designed a marine clock in 1730, and he travelled to London in seek of financial aid. He explained his ideas to Edmond Halley, the Astronomer Royal, who then introduced him to George Graham, Britain’s first-class clockmaker. Graham provided him with financial aid for his early-stage work on sea clocks. It took Harrison five years to build Harrison Number One or HI. Later, he sought the improvement from alternate design and produced H4 with the giant clock appearance. Remarkable as it was, the Board of Longitude wouldn’t grant him the prize for some time until it was adequately satisfied.
+
+Harrison had a principal contestant for the tempting prize at that time, an English mathematician called John Hadley, who developed sextant. The sextant is the tool that people adopt to measure angles, such as the one between the Sun and the horizon, for a calculation of the location of ships or planes. In addition, his invention is significant since it can help determine longitude.
+
+Most chronometer forerunners of that particular generation were English, but that doesn’t mean every achievement was made by them. One wonderful figure in the history is the Lancastrian Thomas Earnshaw, who created the ultimate form of chronometer escapement—the spring detent escapement—and made the final decision on format and productions system for the marine chronometer, which turns it into a genuine modem commercial product, as well as a safe and pragmatic way of navigation at sea over the next century and half.
+        """,
+        "questions_fill": [
+            {"id": "q1", "q": "1. Sailors were able to use the position of the Sun to calculate [.........].", "a": "local time", "exp": "Dẫn chứng (Đoạn 4): 'A comparison with the local time (easily identified by checking the position of the Sun)...' -> Mặt trời giúp xác định giờ địa phương."},
+            {"id": "q2", "q": "2. An invention that could win the competition would lose no more than [.........] every day.", "a": "2.8 seconds", "exp": "Dẫn chứng (Đoạn 5): '...needed to be within 2.8 seconds a day...' -> Sai số cho phép là 2.8 giây/ngày."},
+            {"id": "q3", "q": "3. John and James Harrison’s clock worked accurately without [.........].", "a": "lubrication", "exp": "Dẫn chứng (Đoạn 6): '...revolutionary because it required no lubrication.' -> Không cần dầu bôi trơn."},
+            {"id": "q4", "q": "4. Harrison’s main competitor’s invention was known as [.........].", "a": "sextant", "exp": "Dẫn chứng (Đoạn 7): '...John Hadley, who developed sextant.' -> Đối thủ là John Hadley với kính lục phân."},
+            {"id": "q5", "q": "5. Hadley’s instrument can use [.........] to make a calculation of location of ships or planes.", "a": "angles", "exp": "Dẫn chứng (Đoạn 7): 'The sextant is the tool that people adopt to measure angles...' -> Dùng để đo góc."},
+            {"id": "q6", "q": "6. The modern version of Harrison’s invention is called [.........].", "a": "marine chronometer", "exp": "Dẫn chứng (Đoạn 8): '...turns it into a genuine modem commercial product... marine chronometer...' -> Đồng hồ hàng hải."}
+        ]
+    },
+    "Lesson 3: Australian Agricultural Innovations": {
+        "status": "Active",
+        "title": "Australian Agricultural Innovations: 1850 – 1900",
+        "text": """
+During this period, there was a widespread expansion of agriculture in Australia. The selection system was begun, whereby small sections of land were parceled out by lot. Particularly in New South Wales, this led to conflicts between small holders and the emerging squatter class, whose abuse of the system often allowed them to take vast tracts of fertile land.
+
+There were also many positive advances in farming technology as the farmers adapted agricultural methods to the harsh Australian conditions. One of the most important was “dry farming”. This was the discovery that repeated ploughing of fallow, unproductive land could preserve nitrates and moisture, allowing the land to eventually be cultivated. This, along with the extension of the railways, allowed the development of what are now great inland wheat lands.
+
+The inland areas of Australia are less fertile than most other wheat-producing countries and yields per acre are lower. This slowed their development, but also led to the development of several labour saving devices. In 1843 John Ridley, a South Australian farmer, invented “the stripper”, a basic harvesting machine. By the 1860s its use was widespread. H. V. McKay, then only nineteen, modified the machine so that it was a complete harvester: cutting, collecting and sorting. McKay developed this early innovation into a large harvester manufacturing industry centred near Melbourne and exporting worldwide. Robert Bowyer Smith invented the “stump jump plough”, which let a farmer plough land which still had tree stumps on it. It did this by replacing the traditional plough shear with a set of wheels that could go over stumps, if necessary.
+
+The developments in farm machinery were supported by scientific research. During the late 19th century, South Australian wheat yields were declining. An agricultural scientist at the colony’s agricultural college, John Custance, found that this was due to a lack of phosphates and advised the use of soluble superphosphate fertilizer. The implementation of this scheme revitalised the industry.
+
+From early days it had been obvious that English and European sheep breeds had to be adapted to Australian conditions, but only near the end of the century was the same applied to crops. Prior to this, English and South African strains had been use, with varying degrees of success. WilliamFarrer, from Cambridge University, was the first to develop new wheat varieties that were better able to withstand dry Australian conditions. By 1914, Australia was no longer thought of as a land suitable only for sheep, but as a wheat-growing nation.
+        """,
+        "questions_mc": [
+            {"id": "q1", "q": "1. What is dry farming?", "options": ["A. Preserving nitrates and moisture.", "B. Ploughing the land again and again.", "C. Cultivating fallow land."], "a": "B. Ploughing the land again and again.", "exp": "Dẫn chứng (Đoạn 2): 'This was the discovery that repeated ploughing of fallow... could preserve nitrates...' -> Dry farming là phương pháp cày xới liên tục (repeated ploughing) để giữ ẩm."},
+            {"id": "q2", "q": "2. What did H. V. McKay do?", "options": ["A. Export the stripper.", "B. Improve the stripper.", "C. Cut, collect, and sort wheat."], "a": "B. Improve the stripper.", "exp": "Dẫn chứng (Đoạn 3): 'H. V. McKay... modified the machine so that it was a complete harvester...' -> Modified the machine = Improve the stripper."},
+            {"id": "q3", "q": "3. What did the 'stump jump plough’ innovation allow farmers to do?", "options": ["A. Cut through tree stumps.", "B. Change the wheels for a traditional plough.", "C. Allow farmers to cultivate land that hadn’t been fully cleared."], "a": "C. Allow farmers to cultivate land that hadn’t been fully cleared.", "exp": "Dẫn chứng (Đoạn 3): '...let a farmer plough land which still had tree stumps on it.' -> Cày trên đất vẫn còn gốc cây (chưa dọn sạch)."},
+            {"id": "q4", "q": "4. What did John Custance recommend?", "options": ["A. Improving wheat yields.", "B. Revitalizing the industry.", "C. Fertilizing the soil."], "a": "C. Fertilizing the soil.", "exp": "Dẫn chứng (Đoạn 4): '...advised the use of soluble superphosphate fertilizer.' -> Khuyên dùng phân bón."},
+            {"id": "q5", "q": "5. Why was William Farrer’s wheat better?", "options": ["A. It was drought-resistant.", "B. It wasn’t from England or South Africa.", "C. It was drier for Australian conditions."], "a": "A. It was drought-resistant.", "exp": "Dẫn chứng (Đoạn 5): '...better able to withstand dry Australian conditions.' -> Chịu hạn tốt (drought-resistant)."}
+        ]
+    }
+}
+
+    
+# WRITING CONTENT (Chỉ lớp ELITE)
+WRITING_CONTENT = {
+    "Lesson 3: Education & Society": {
+        "task_type": "Task 2",
+        "time": 40,
+        "question": """
+### 📝 IELTS Writing Task 2
+
+**Some people think that parents should teach children how to be good members of society. Others, however, believe that school is the place to learn this.**
+
+**Instructions:**
+* Discuss both these views and give your own opinion.
+* Give reasons for your answer and include any relevant examples from your own knowledge or experience.
+
+---
+*Write at least 250 words.*
+"""
+    }
+}
+SPEAKING_MENU = list(SPEAKING_CONTENT.keys()) + [f"Lesson {i}: (Sắp ra mắt)" for i in range(3, 11)]
+READING_MENU = [f"Lesson {i}" if i != 2 else "Lesson 2: Marine Chronometer" for i in range(1, 11)]
+WRITING_MENU = ["Lesson 3: Education & Society"]
+# ================= 2. HỆ THỐNG & API =================
+st.set_page_config(page_title="Mr. Tat Loc IELTS Portal", page_icon="🎓", layout="wide")
+
+st.markdown("""
+    <style>
+    /* =============================================
+       1. GLOBAL STYLES (Kế thừa từ bộ Visual Hierarchy)
+       ============================================= */
+    html, body, [class*="css"] {
+        font-family: 'Segoe UI', Roboto, sans-serif;
+        color: #333333;
+    }
+
+    h1 { color: #003366; font-size: 32px !important; font-weight: 800; margin-bottom: 20px; }
+    h2 { color: #004080; font-size: 24px !important; font-weight: 700; border-bottom: 2px solid #e0e0e0; padding-bottom: 8px; margin-top: 30px; }
+    h3 { color: #0059b3; font-size: 20px !important; font-weight: 600; margin-top: 20px; }
+    
+    /* Button chuẩn */
+    .stButton button {
+        background-color: #004080; color: white; border-radius: 8px; font-weight: 600; 
+        padding: 0.6rem 1.2rem; border: none; transition: all 0.3s ease;
+    }
+    .stButton button:hover { background-color: #002244; transform: translateY(-2px); }
+
+    /* =============================================
+       2. READING & EXAM MODE STYLES (Phần bạn mới thêm)
+       ============================================= */
+    
+    /* Khung cuộn bài đọc */
+    .scroll-container {
+        height: 600px;
+        overflow-y: auto;
+        padding: 25px; /* Tăng padding chút cho thoáng */
+        border: 1px solid #d1d9e6; /* Viền xanh xám nhẹ hợp tông hơn */
+        border-radius: 12px; /* Bo tròn mềm mại hơn */
+        background-color: #f8f9fa; /* Màu nền xám trắng hiện đại */
+        box-shadow: inset 0 2px 4px rgba(0,0,0,0.05); /* Hiệu ứng chìm nhẹ */
+    }
+    
+    /* Nội dung bài đọc */
+    .reading-text {
+        font-size: 17px; /* Tăng lên 17px chuẩn sách giáo khoa */
+        line-height: 1.8; /* Dãn dòng rộng để mắt không mỏi */
+        color: #2c3e50; /* Màu chữ xanh đen đậm, dịu mắt hơn đen tuyền */
+        text-align: justify;
+        padding-right: 15px;
+    }
+    
+    /* Câu hỏi */
+    .question-text {
+        font-size: 17px; /* Set 17px để phân biệt rõ với văn bản thường */
+        
+        color: #2c3e50; /* Dùng màu thương hiệu cho câu hỏi */
+        margin-bottom: 12px;
+        margin-top: 15px;
+        line-height: 1.5;
+    }
+    
+    /* Highlight (Vàng) */
+    .highlighted {
+        background-color: #fffacd; /* Vàng kem (LemonChiffon) dịu hơn vàng gắt */
+        border-bottom: 2px solid #ffd700;
+        color: #000;
+        cursor: pointer;
+        padding: 2px 0;
+    }
+    
+    /* Hộp giải thích */
+    .explanation-box {
+        background-color: #eef6fc; /* Xanh rất nhạt */
+        padding: 20px; 
+        border-radius: 8px;
+        border-left: 5px solid #004080; /* Đường kẻ trái màu xanh đậm chủ đạo */
+        margin-top: 15px; 
+        font-size: 16px;
+        color: #2c3e50;
+    }
+
+    /* Trạng thái đúng/sai */
+    .correct-ans { color: #27ae60; font-weight: bold; background-color: #e8f8f5; padding: 2px 6px; border-radius: 4px; }
+    .wrong-ans { color: #c0392b; font-weight: bold; background-color: #fdedec; padding: 2px 6px; border-radius: 4px; }
+    
+    /* Tùy chỉnh thanh cuộn cho đẹp (Webkit) */
+    .scroll-container::-webkit-scrollbar { width: 8px; }
+    .scroll-container::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 4px; }
+    .scroll-container::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 4px; }
+    .scroll-container::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
+    </style>
+    
+    <script>
+    // TÍNH NĂNG HIGHLIGHT BẰNG CÁCH BÔI ĐEN (Robust Version)
+    document.addEventListener('mouseup', function() {
+        var selection = window.getSelection();
+        var selectedText = selection.toString();
+        
+        // Chỉ xử lý nếu có text được bôi đen và không rỗng
+        if (selectedText.length > 0 && selection.rangeCount > 0) {
+            // Hàm kiểm tra xem node có nằm trong vùng bài đọc (.reading-text) không
+            function hasReadingClass(node) {
+                if (!node) return false;
+                if (node.nodeType === 3) node = node.parentNode; // Nếu là Text Node thì lấy cha
+                return node.closest('.reading-text') !== null;
+            }
+
+            var range = selection.getRangeAt(0);
+            var commonAncestor = range.commonAncestorContainer;
+
+            // Kiểm tra vùng chọn có nằm trọn vẹn trong bài đọc không
+            if (hasReadingClass(commonAncestor)) {
+                try {
+                    var span = document.createElement("span");
+                    span.className = "highlighted";
+                    span.title = "Click để xóa highlight";
+                    
+                    // Sự kiện click để xóa highlight
+                    span.onclick = function(e) {
+                        e.stopPropagation(); // Ngăn sự kiện nổi bọt
+                        var text = document.createTextNode(this.innerText);
+                        this.parentNode.replaceChild(text, this);
+                        // Gộp các text node lại
+                        if (text.parentNode) text.parentNode.normalize(); 
+                    };
+
+                    range.surroundContents(span);
+                    selection.removeAllRanges(); // Bỏ bôi đen sau khi highlight xong
+                } catch (e) { 
+                    console.log("Highlight phức tạp: Vui lòng chọn từng đoạn văn bản nhỏ hơn."); 
+                }
+            }
+        }
+    });
+    </script>
+    """, unsafe_allow_html=True)
+
+try:
+    API_KEY = st.secrets["GOOGLE_API_KEY"]
+except:
+    st.error("⚠️ Lỗi: Chưa có API Key.")
+    st.stop()
+
+# --- HÀM GỌI API GEMINI (ĐÃ TỐI ƯU JSON VÀ FIX LỖI 429) ---
+# --- ĐỊNH NGHĨA QUAN TRỌNG: Cần có tham số audio_data ---
+def call_gemini(prompt, expect_json=False, audio_data=None):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={API_KEY}"
+    headers = {'Content-Type': 'application/json'}
+    
+    # Nếu cần JSON, thêm chỉ dẫn rõ ràng vào prompt
+    final_prompt = prompt
+    if expect_json:
+        final_prompt += "\n\nIMPORTANT: Output STRICTLY JSON without Markdown formatting (no ```json or ```)."
+    
+    # Cấu trúc message parts
+    parts = [{"text": final_prompt}]
+    if audio_data:
+        parts.append({"inline_data": {"mime_type": "audio/wav", "data": audio_data}})
+
+    data = {"contents": [{"parts": parts}]}
+    
+    # Cơ chế Retry khi gặp lỗi 429
+    for attempt in range(4): # Thử lại tối đa 4 lần
+        try:
+            resp = requests.post(url, headers=headers, data=json.dumps(data))
+            if resp.status_code == 200:
+                text = resp.json()['candidates'][0]['content']['parts'][0]['text']
+                if expect_json:
+                    # Làm sạch chuỗi nếu AI lỡ thêm markdown
+                    text = re.sub(r"```json|```", "", text).strip()
+                return text
+            elif resp.status_code == 429: # Resource Exhausted
+                time.sleep(2 ** attempt) # Đợi 1s, 2s, 4s...
+                continue
+            else:
+                return None
+        except:
+            time.sleep(1)
+            continue
+            
+    return None
+
+# --- QUẢN LÝ SESSION STATE ---
+if 'speaking_attempts' not in st.session_state: st.session_state['speaking_attempts'] = {}
+if 'generated_quiz' not in st.session_state: st.session_state['generated_quiz'] = None
+if 'reading_session' not in st.session_state: st.session_state['reading_session'] = {'status': 'intro', 'mode': None, 'end_time': None}
+if 'reading_highlight' not in st.session_state: st.session_state['reading_highlight'] = ""
+if 'writing_step' not in st.session_state: st.session_state['writing_step'] = 'outline' 
+if 'writing_outline_score' not in st.session_state: st.session_state['writing_outline_score'] = 0
+# ================= 3. LOGIC ĐĂNG NHẬP (ĐÃ CHUẨN HÓA TÊN) =================
+def login():
+    st.markdown("<div style='text-align: center; margin-top: 50px;'><h1>MR. TAT LOC IELTS CLASS</h1></div>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col2:
+        with st.form("login"):
+            name = st.text_input("Họ tên học viên:")
+            class_code = st.selectbox("Chọn Mã Lớp:", ["-- Chọn lớp --"] + list(CLASS_CONFIG.keys()))
+            if st.form_submit_button("Vào Lớp Học"):
+                if name and class_code != "-- Chọn lớp --":
+                    # CHUẨN HÓA TÊN: "  nguyễn văn a  " -> "Nguyễn Văn A"
+                    clean_name = normalize_name(name)
+                    st.session_state['user'] = {"name": clean_name, "class": class_code, "level": CLASS_CONFIG[class_code]}
+                    st.rerun()
+                else: st.warning("Vui lòng điền đủ thông tin.")
+
+def logout(): st.session_state['user'] = None; st.rerun()
+
+# ================= 4. GIAO DIỆN CHÍNH =================
+if 'user' not in st.session_state or st.session_state['user'] is None:
+    login()
+else:
+    user = st.session_state['user']
+    
+    with st.sidebar:
+        st.write(f"👤 **{user['name']}**")
+        st.caption(f"Lớp: {user['class']} | Level: {user['level']['level']}")
+        st.divider()
+        menu = st.radio("CHỌN KỸ NĂNG:", ["🏆 Bảng Xếp Hạng", "🗣️ Speaking", "📖 Reading", "🎧 Listening", "✍️ Writing"])
+        st.divider()
+        if st.button("Đăng xuất"): logout()
+
+    # --- MODULE 4: LEADERBOARD ---
+    if menu == "🏆 Bảng Xếp Hạng":
+        st.title(f"🏆 Bảng Xếp Hạng Lớp {user['class']}")
+        if st.button("🔄 Làm mới"): st.rerun()
+        lb_s, lb_r, lb_w = get_leaderboard(user['class'])
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.subheader("🎤 Speaking (TB)")
+            if lb_s is not None and not lb_s.empty: 
+                # Đã xóa .background_gradient để fix lỗi
+                st.dataframe(lb_s.style.format({"Điểm Speaking (TB)": "{:.2f}"}), use_container_width=True)
+            else: st.info("Chưa có dữ liệu.")
+        with c2:
+            st.subheader("📚 Reading (Max)")
+            if lb_r is not None and not lb_r.empty: 
+                # Đã xóa .background_gradient để fix lỗi
+                st.dataframe(lb_r.style.format({"Điểm Reading (Max)": "{:.1f}"}), use_container_width=True)
+            else: st.info("Chưa có dữ liệu.")
+        with c3:
+            st.subheader("✍️ Writing (TB)")
+            if lb_w is not None and not lb_w.empty: 
+                # Đã xóa .background_gradient để fix lỗi
+                st.dataframe(lb_w.style.format({"Điểm Writing (TB)": "{:.2f}"}), use_container_width=True)
+            else: st.info("Chưa có dữ liệu.")
+
+    # --- MODULE 5: WRITING (NEW & POLISHED) ---
+    elif menu == "✍️ Writing":
+        st.title("✍️ Luyện Tập Writing (Task 2)")
+        
+        lesson_w = st.selectbox("Chọn bài viết:", WRITING_MENU)
+        
+        # Chỉ lớp ELITE mới thấy bài này (ví dụ)
+        if "Lesson 3" in lesson_w:
+            data_w = WRITING_CONTENT["Lesson 3: Education & Society"]
+            st.info(f"### TOPIC: {data_w['question']}")
+            
+# --- PHẦN 1: CHECKLIST & OUTLINE ---
+            
+            # --- PHẦN 1: CHECKLIST & OUTLINE ---
+            
+            # Cập nhật nội dung Expander bằng Markdown thuần (Full nội dung, ít icon)
+            with st.expander("📚 **CÁC LỖI TƯ DUY & CẤU TRÚC LOGIC (Đọc kỹ trước khi viết)**", expanded=False):
+                st.markdown("""
+                ### 1. CÁC LỖI TƯ DUY LOGIC CẦN TRÁNH 
+                Đây là các lỗi lập luận phổ biến do ảnh hưởng của tư duy dịch từ tiếng Việt hoặc văn hóa giao tiếp hàng ngày, cần loại bỏ trong văn viết học thuật:
+
+                **⚠️ Hasty Generalization (Khái quát hóa vội vã)**
+                * **Bản chất:** Sử dụng các từ chỉ sự tuyệt đối (*All, Always, Everyone, Nobody*) dựa trên định kiến hoặc quan sát hẹp, thiếu tính khách quan.
+                * **Ví dụ sai:** "Graduates **always** find it hard to get a job." (Sinh viên tốt nghiệp luôn khó tìm việc -> Sai sự thật).
+                * **Khắc phục (Hedging):** Sử dụng ngôn ngữ rào đón để đảm bảo tính chính xác.
+                * **Sửa:** "It can be challenging for **many** fresh graduates to secure employment."
+
+                **⚠️ Slippery Slope (Trượt dốc phi logic)**
+                * **Bản chất:** Suy diễn một chuỗi hậu quả cực đoan từ một nguyên nhân ban đầu mà thiếu các mắt xích logic trung gian. Lỗi này thường gặp khi người viết muốn nhấn mạnh hậu quả nhưng lại cường điệu hóa quá mức.
+                * **Ví dụ sai:** "Playing video games leads to dropping out of school, which results in becoming a criminal." (Chơi game -> Bỏ học -> Tội phạm).
+                * **Khắc phục:** Chỉ đề cập đến hệ quả trực tiếp và có tính khả thi cao nhất.
+                * **Sửa:** "Excessive gaming may **negatively impact academic performance** due to a lack of focus."
+
+                **⚠️ Circular Reasoning (Lập luận luẩn quẩn)**
+                * **Bản chất:** Giải thích một vấn đề bằng cách lặp lại vấn đề đó với từ ngữ khác, không cung cấp thêm thông tin hay lý do sâu sắc (Why/How).
+                * **Ví dụ sai:** "Air pollution is harmful because it has bad effects on humans." (*Harmful* và *Bad effects* là tương đương -> Không giải thích được gì).
+                * **Khắc phục:** Triển khai ý bằng nguyên nhân cụ thể hoặc cơ chế tác động.
+                * **Sửa:** "Air pollution is detrimental as it **directly contributes to respiratory diseases** such as asthma."
+
+                ---
+
+                ### 2. TIÊU CHUẨN CẤU TRÚC ĐOẠN VĂN (MÔ HÌNH P.E.E.R)
+                Mỗi đoạn văn (Body Paragraph) cần tuân thủ cấu trúc chặt chẽ để đảm bảo tính mạch lạc:
+                
+
+                * **P - Point (Topic Sentence):** Câu chủ đề nêu luận điểm chính trực tiếp, ngắn gọn. Tránh lối viết "mở bài gián tiếp" vòng vo.
+                * **E - Explanation (Elaboration):** Giải thích lý do tại sao luận điểm đó đúng. Đây là phần quan trọng nhất thể hiện tư duy (Critical Thinking).
+                * **E - Example (Evidence):** Đưa ra ví dụ cụ thể, điển hình (không lấy ví dụ cá nhân chủ quan).
+                * **R - Result/Link:** Câu chốt, khẳng định lại ý nghĩa của luận điểm đối với câu hỏi đề bài.
+
+                ---
+
+                ### 3. TÍNH MẠCH LẠC & PHÁT TRIỂN Ý (COHERENCE & PROGRESSION)
+                
+                **Depth over Breadth (Chiều sâu hơn Chiều rộng):**
+                * **Lỗi thường gặp:** Liệt kê quá nhiều ý ("Firstly, Secondly, Thirdly...") nhưng mỗi ý chỉ viết sơ sài. Điều này khiến bài viết trở thành một bản danh sách (list) hơn là một bài luận (essay).
+                * **Giải pháp:** Trong một đoạn văn, chỉ nên chọn 1 đến 2 ý tưởng đắt giá nhất và phát triển chúng trọn vẹn theo mô hình P.E.E.R.
+
+                **Linear Thinking (Tư duy tuyến tính):**
+                * Đảm bảo dòng chảy thông tin đi theo đường thẳng: **A dẫn đến B, B dẫn đến C**.
+                * Tránh tư duy đường vòng hoặc nhảy cóc (nhắc đến kết quả D mà không giải thích quá trình B và C).
+                """)
+
+            st.subheader("📝 STEP 1: OUTLINE")
+        
+            
+            with st.form("outline_form"):
+                intro = st.text_area("Introduction:", height=80, placeholder="Paraphrase topic + Thesis statement (Quan điểm của bạn)")
+                body1 = st.text_area("Body 1 (PEER Structure):", height=150, placeholder="Point (Luận điểm 1) --> Explanation (Tại sao?) --> Example --> Result")
+                body2 = st.text_area("Body 2 (PEER Structure):", height=150, placeholder="Point (Luận điểm 2) --> Explanation (Tại sao?) --> Example --> Result")
+                conc = st.text_area("Conclusion:", height=80, placeholder="Restate opinion + Summary (Tóm tắt)")
+                
+                check_outline = st.form_submit_button("🔍 Kiểm Tra Logic Outline")
+            
+            # Xử lý Check Outline
+            if check_outline:
+                if intro and body1 and body2 and conc:
+                    with st.spinner("Đang phân tích..."):
+                        
+                        # Prompt giữ nguyên sự nghiêm khắc để khớp với checklist
+                        prompt = f"""
+                        ## ROLE:
+                        You are a strict, high-level IELTS Writing Examiner and Logic Instructor. Your goal is to critique student outlines with a focus on **Critical Thinking** and **Academic Rigor**.
+
+                        ## INPUT DATA:
+                        - **Topic:** {data_w['question']}
+                        - **Intro:** {intro}
+                        - **Body 1:** {body1}
+                        - **Body 2:** {body2}
+                        - **Conclusion:** {conc}
+
+                        ## EVALUATION CRITERIA (MATCHING THE STUDENT CHECKLIST):
+                        Evaluate based on these specific academic standards:
+
+                        1.  **LOGICAL FALLACIES (LỖI TƯ DUY):**
+                            -   *Hasty Generalization:* Using absolute terms (All, Always) vs Hedging.
+                            -   *Slippery Slope:* Extreme consequences without intermediate steps.
+                            -   *Circular Reasoning:* Explaining X by repeating X.
+                            -   *Non-Linear Thinking:* Jumping ideas (A->D).
+
+                        2.  **STRUCTURE (PEER MODEL):**
+                            -   *P-E-E-R:* Point -> Explanation (Why/How) -> Example -> Result.
+                            -   *Depth over Breadth:* Is the explanation deep enough or just listing ideas?
+
+                        ## REQUIREMENTS:
+                        1.  **NO SCORE:** Qualitative feedback only.
+                        2.  **LANGUAGE:** Vietnamese (Tiếng Việt).
+                        3.  **TONE:** Constructive but SHARP.
+                        4.  **OUTPUT FORMAT (Markdown):**
+                            
+                            ### 1. NHẬN XÉT TỔNG QUAN
+                            (Summary of logical flow).
+
+                            ### 2. PHÂN TÍCH CHI TIẾT LỖI
+                            (Analyze strict logic. If error found, use format):
+                            
+                            **[Vị trí: Mở bài / Thân bài...]**
+                            -   **Lỗi (Error Name):** [e.g., Circular Reasoning]
+                            -   **Tại sao sai:** [Explain specifically]
+                            -   **Cách sửa:** [Suggest academic fix]
+
+                            ### 3. GỢI Ý NÂNG CẤP
+                            (Vocab or flow adjustments. Suggest 5-10 academic collocations based on ideas from outline).
+                        """
+                        
+                        res = call_gemini(prompt)
+                        
+                        if res:
+                            st.session_state['writing_feedback_data'] = res
+                            st.rerun()
+                else:
+                    st.warning("⚠️ Vui lòng điền đầy đủ cả 4 phần.")
+
+            # Hiển thị Feedback
+            if st.session_state.get('writing_feedback_data'):
+                st.divider()
+                st.markdown("### KẾT QUẢ PHÂN TÍCH DÀN Ý")
+                with st.container(border=True):
+                    st.markdown(st.session_state['writing_feedback_data'])
+
+            # --- PHẦN 2: VIẾT BÀI (LUÔN HIỂN THỊ) ---
+    # Chọn chế độ làm bài
+            mode_w = st.radio("Chọn chế độ:", ["-- Chọn chế độ --", "Luyện Tập (Không giới hạn)", "Thi Thử (40 Phút)"], horizontal=True, key="w_mode_select")
+            
+            if mode_w != "-- Chọn chế độ --":
+                # Hiển thị khu vực viết bài
+                
+
+                # Đồng hồ (Chỉ hiện khi chọn Thi Thử)
+                if "Thi Thử" in mode_w:
+                     timer_html = f"""
+                    <div style="font-size: 24px; font-weight: bold; color: #d35400; font-family: 'Segoe UI', sans-serif; margin-bottom: 10px;">
+                        ⏳ Thời gian: <span id="timer_w">40:00</span>
+                    </div>
+                    <script>
+                    var time = {data_w['time']} * 60;
+                    setInterval(function() {{
+                        var m = Math.floor(time / 60);
+                        var s = time % 60;
+                        document.getElementById("timer_w").innerHTML = m + ":" + (s < 10 ? "0" : "") + s;
+                        time--;
+                    }}, 1000);
+                    </script>
+                    """
+                     components.html(timer_html, height=50)
+                else:
+                     st.success("Chế độ Luyện Tập")
+
+                essay = st.text_area("Bài làm (Min 250 words):", height=400, key="essay_input")
+                
+                if st.button("Nộp Bài Chấm Điểm"):
+                    if len(essay.split()) < 50: st.warning("Bài viết quá ngắn.")
+                    else:
+                        with st.spinner("Đang chấm điểm theo Band Descriptors (4-9)..."):
+                            # PROMPT CHẤM BÀI
+                            prompt = f"""
+                            ## ROLE:
+                            You are a strict, Senior IELTS Writing Examiner (IDP/BC certified).
+                        
+                            ## TASK:
+                            Assess the following Task 2 Essay based on the official IELTS Writing Band Descriptors.
+                        
+                            **INPUT DATA:**
+                            - **Topic:** {data_w['question']}
+                            - **Student Essay:** {essay}
+
+                            ## 🛡️ GRADING RUBRIC (STRICT DIFFERENTIATORS):
+                            You must evaluate based on these specific distinctions between bands:
+
+                            **1. Task Response (TR):**
+                            - **Band 4:** Response is irrelevant or minimal; main ideas are difficult to identify or repetitive.
+                            - **Band 5:** Addresses the task but usually only partially; ideas are limited/undeveloped; no clear conclusions.
+                            - **Band 6:** Addresses all parts; main ideas are relevant but may be insufficiently developed or unclear.
+                            - **Band 7:** Addresses all parts; presents a clear position throughout; extends and supports main ideas.
+                            - **Band 8+:** Sufficiently addresses all parts; well-developed response with relevant, extended, and supported ideas.
+
+                            **2. Coherence & Cohesion (CC):**
+                            - **Band 4:** No clear progression; basic or repetitive cohesive devices.
+                            - **Band 5:** Some organization but lacks overall progression; cohesive devices are inadequate, inaccurate, or overused.
+                            - **Band 6:** Arranges information coherently; uses cohesive devices effectively but they may sound **mechanical/faulty**.
+                            - **Band 7:** Logically organizes information; uses a range of cohesive devices appropriately (**natural flow**).
+                            - **Band 8+:** Sequences information and ideas logically; manages all aspects of cohesion well.
+
+                            **3. Lexical Resource (LR):**
+                            - **Band 4:** Basic vocabulary; used repetitively; inappropriate choices.
+                            - **Band 5:** Limited range; minimally adequate for the task; noticeable errors in spelling/formation that **may cause difficulty for the reader**.
+                            - **Band 6:** Adequate range; attempts less common items but with some inaccuracy; errors do not impede communication.
+                            - **Band 7:** Sufficient range to allow flexibility; uses **less common lexical items** with awareness of style/collocation.
+                            - **Band 8+:** Wide range; fluent and flexible; skilful use of uncommon items.
+
+                            **4. Grammatical Range & Accuracy (GRA) - *CRITICAL*:**
+                            - **Band 4:** Very limited range of structures; rare use of subordinate clauses; errors are frequent and cause strain.
+                            - **Band 5:** Attempts complex sentences but these tend to be faulty; grammatical errors are frequent and **may cause some difficulty for the reader**.
+                            - **Band 6:** Mix of simple and complex forms; errors occur but **rarely impede communication**.
+                            - **Band 7:** Uses a variety of complex structures; produces **frequent error-free sentences**.
+                            - **Band 8+:** Wide range of structures; the majority of sentences are error-free.
+
+                            ## 📝 OUTPUT REQUIREMENTS:
+                            1.  **SCORING:** Component scores (TR, CC, LR, GRA) must be INTEGERS (e.g., 4, 5, 6). Overall can be .5.
+                            2.  **FEEDBACK FORMAT:** Return a valid JSON object strictly following this structure (Language: Vietnamese):
+
+                            {{
+                                "TR": [int], "CC": [int], "LR": [int], "GRA": [int],
+                                "Overall": [float],
+                                "Feedback": "### 🎯 KẾT QUẢ: Band [Overall]\\n\\n### 📊 CHI TIẾT ĐIỂM SỐ:\\n- **Task Response ([TR]):** [Brief explanation why based on rubric]\\n- **Coherence ([CC]):** [Brief explanation]\\n- **Lexical ([LR]):** [Brief explanation]\\n- **Grammar ([GRA]):** [Brief explanation]\\n\\n### 🛠️ SỬA LỖI CHI TIẾT (QUAN TRỌNG):\\n\\n**1. Cải thiện Từ vựng & Ngữ pháp:**\\n* ❌ **Lỗi:** [Quote exact mistake]\\n* ✅ **Sửa:** [Rewrite accurately]\\n* 💡 **Giải thích:** [Explain the error type]\\n\\n**2. Cải thiện Mạch lạc & Logic:**\\n* ❌ **Vấn đề:** [Point out logic gap or mechanical linking]\\n* 💡 **Gợi ý:** [Suggestion for better flow]\\n\\n### 💬 LỜI KHUYÊN CỦA GIÁM KHẢO:\\n[Constructive advice for next steps]"
+                            }}
+                            """
+                            res = call_gemini(prompt, expect_json=True)
+                            if res:
+                                try:
+                                    grade = json.loads(res)
+                                    st.session_state['writing_result'] = grade
+                                    st.session_state['writing_step'] = 'finished'
+                                    crit = json.dumps({"TR": grade['TR'], "CC": grade['CC'], "LR": grade['LR'], "GRA": grade['GRA']})
+                                    save_writing_log(user['name'], user['class'], lesson_w, "Education", grade['Overall'], crit, grade['Feedback'])
+                                    st.rerun()
+                                except: st.error("Lỗi chấm bài.")
+
+            # --- GIAI ĐOẠN 3: KẾT QUẢ (HIỂN THỊ SAU KHI NỘP) ---
+            if st.session_state.get('writing_step') == 'finished' and st.session_state.get('writing_result'):
+                res = st.session_state['writing_result']
+                st.balloons()
+                st.success(f"OVERALL BAND: {res['Overall']}")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Task Response", res['TR'])
+                c2.metric("Coherence", res['CC'])
+                c3.metric("Lexical", res['LR'])
+                c4.metric("Grammar", res['GRA'])
+                
+                with st.container(border=True):
+                    st.markdown("### 📝 Nhận xét chi tiết")
+                    st.markdown(res['Feedback'])
+                
+                if st.button("Viết lại (Resubmit)"):
+                    st.session_state['writing_step'] = 'outline'
+                    st.session_state['writing_result'] = None # Clear kết quả cũ
+                    st.rerun()
+
+        else: st.warning("Bài này chưa mở.")
+    
+    # --- MODULE 1: SPEAKING (CHIA 2 TAB) ---
+    elif menu == "🗣️ Speaking":
+        st.title("Luyện Tập Speaking")
+        
+        tab_class, tab_forecast = st.tabs(["📚 Bài Tập Trên Lớp", "🔮 Luyện Đề Forecast Q1/2026"])
+        
+        # === TAB 1: BÀI TẬP TRÊN LỚP (CŨ) ===
+        with tab_class:
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                lesson_choice = st.selectbox("Chọn bài học:", SPEAKING_MENU, key="class_lesson")
+            
+            if lesson_choice in SPEAKING_CONTENT:
+                with col2:
+                    q_list = SPEAKING_CONTENT[lesson_choice]
+                    question = st.selectbox("Câu hỏi:", q_list, key="class_q")
+                
+                # Logic cũ (Record & Feedback ngay lập tức)
+                attempts = st.session_state['speaking_attempts'].get(question, 0)
+                remaining = 5 - attempts
+                
+                st.markdown(f"**Topic:** {question}")
+                
+                if remaining > 0:
+                    st.info(f"⚡ Bạn còn **{remaining}** lượt trả lời cho câu này.")
+                    audio = st.audio_input("Ghi âm câu trả lời:", key=f"rec_class_{question}")
+                    
+                    if audio:
+                        # ... (Logic xử lý audio cũ giữ nguyên) ...
+                        audio.seek(0)
+                        audio_bytes = audio.read()
+                        audio_sig = hash(audio_bytes)
+                        state_key = f"proc_class_{question}"
+                        if state_key not in st.session_state: st.session_state[state_key] = {"sig": None, "result": None}
+                        proc = st.session_state[state_key]
+                        
+                        if proc["sig"] != audio_sig:
+                            if len(audio_bytes) < 1000: st.warning("File quá ngắn.")
+                            else:
+                                with st.spinner("Đang chấm điểm..."):
+                                    audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+                                    # === PROMPT RUBRIC CHUẨN XÁC ===
+                                    prompt = f"""
+                                Role: Senior IELTS Speaking Examiner.
+                        
+                                Task: Assess speaking response for "{question}" based strictly on the rubric with encouraging tone.
+                                **🚨 CRITICAL INSTRUCTION FOR TRANSCRIPT (QUAN TRỌNG NHẤT):**
+                                1. **VERBATIM TRANSCRIPTION:** You must write EXACTLY what you hear, sound-by-sound.
+                                2. **NO AUTO-CORRECT:** Do NOT fix grammar or pronunciation errors. 
+                                   - If the user says "I go school" (missing 'to'), WRITE "I go school".
+                                   - If the user mispronounces "think" as "sink", WRITE "sink" (or "tink").
+                                   - If the user misses final sounds (e.g., "five" -> "fi"), WRITE "fi".
+                                3. The transcript MUST reflect the raw performance so the user can see their mistakes.
+
+                                ## GRADING RUBRIC (TIÊU CHÍ PHÂN LOẠI CỐT LÕI):
+
+                                * **BAND 9 (Native-like):**
+                                * **Fluency:** Trôi chảy tự nhiên, không hề vấp váp.
+                                * **Vocab:** Chính xác tuyệt đối, tinh tế.
+                                * **Pronunciation:** Hoàn hảo. Transcript sạch bóng, không có bất kỳ từ nào sai ngữ cảnh hay vô nghĩa.
+
+                                * **BAND 8 (Rất tốt):**
+                                * **Fluency:** Mạch lạc, hiếm khi lặp lại.
+                                * **Vocab:** Dùng điêu luyện Idioms/từ hiếm.
+                                * **Pronunciation:** Dễ hiểu xuyên suốt. Ngữ điệu tốt. Transcript chính xác 99%.
+
+                                * **BAND 7 (Tốt - Target):**
+                                * **Fluency:** Nói dài dễ dàng. Từ nối linh hoạt.
+                                * **Vocab:** Dùng được Collocation tự nhiên.
+                                * **Grammar:** Thường xuyên có câu phức không lỗi.
+                                * **Pronunciation:** Dễ hiểu. *(Lưu ý: Chấp nhận một vài lỗi nhỏ, nhưng nếu Transcript xuất hiện từ lạ/sai ngữ cảnh, hãy trừ điểm nhẹ).*
+
+                                * **BAND 6 (Khá):**
+                                * **Fluency:** Đôi khi mất mạch, từ nối máy móc.
+                                * **Vocab:** Đủ để bàn luận, biết Paraphrase.
+                                * **Grammar:** Có dùng câu phức nhưng thường xuyên sai.
+                                * **Pronunciation:** Rõ ràng phần lớn thời gian. *(Lưu ý: Nếu thấy từ vựng bị biến đổi thành từ khác nghe na ná - Sound-alike words - hoặc 1-2 đoạn vô nghĩa, hãy đánh dấu là Lỗi Phát Âm).*
+
+                                * **BAND 5 (Trung bình):**
+                                * **Fluency:** Ngắt quãng nhiều, lặp từ.
+                                * **Grammar:** Chỉ đúng khi dùng câu đơn.
+                                * **Pronunciation:** *(Dấu hiệu nhận biết: Transcript thường xuyên xuất hiện các từ vô nghĩa hoặc sai hoàn toàn ngữ cảnh do máy không nhận diện được âm).*
+
+                                * **BAND 4 (Hạn chế):**
+                                * **Fluency:** Câu cụt, ngắt quãng dài.
+                                * **Pronunciation:** Khó hiểu. Transcript gãy vụn, chứa nhiều từ không liên quan đến chủ đề.
+
+                                ## OUTPUT FORMAT (Vietnamese Markdown):
+                                Trả về kết quả chi tiết:
+
+                                ### TRANSCRIPT:
+                                "[Ghi lại chính xác từng âm thanh nghe được. Nếu học viên nói sai ngữ pháp hoặc phát âm sai từ nào, HÃY GHI LẠI Y NGUYÊN LỖI ĐÓ. Ví dụ: nói 'sink' thay vì 'think', hãy ghi 'sink'. TUYỆT ĐỐI KHÔNG TỰ ĐỘNG SỬA THÀNH CÂU ĐÚNG]"
+
+                                ### KẾT QUẢ: [Score - format 5.0, 5.5]
+
+                                ### PHÂN TÍCH CHI TIẾT:
+                                1. **Fluency & Coherence:** [Nhận xét độ trôi chảy, xử lý các chỗ ngắt ngứ, từ nối và cách phát triển ý logic, trọng tâm câu trả lời]
+                                2. **Lexical Resource:** [Nhận xét vốn từ, các idiomatic language dùng được liên quan đến topic câu hỏi]
+                                3. **Grammar:** [Nhận xét cấu trúc câu, ngữ pháp]
+                                4. **Pronunciation:** [Nhận xét phát âm, trọng âm, chunking, âm đuôi dựa trên file ghi âm]
+
+                                ### CẢI THIỆN (NÂNG BAND):
+                                *(Chỉ chọn ra tối đa 3-5 lỗi sai lớn nhất hoặc câu diễn đạt vụng về/Việt-lish nhất để sửa cho tự nhiên hơn. **TUYỆT ĐỐI KHÔNG** sửa những câu đã đúng/ổn).*
+
+                                **Lỗi 1 (Grammar/Word Choice):**
+                                * **Gốc:** "[Trích văn bản gốc]"
+                                * **Sửa:** "[Viết lại tự nhiên hơn - Natural Speaking]"
+                                * **Lý do:** [Giải thích ngắn gọn, nghĩa tiếng Việt]
+
+                                **Lỗi 2 (Unnatural Phrasing):**
+                                * **Gốc:** "..."
+                                * **Sửa:** "..."
+                                * **Lý do:** ...
+                                """
+                                    # Gọi API
+                                    text_result = call_gemini(prompt, audio_data=audio_b64)
+                                    
+                                    if text_result:
+                                        proc["result"] = text_result
+                                        proc["error"] = False
+                                        st.session_state['speaking_attempts'][question] = attempts + 1
+                                        save_speaking_log(user['name'], user['class'], lesson_choice, question, text_result)
+                                        st.rerun() # Rerun để ẩn nút Retry và hiện kết quả
+                                    else:
+                                        proc["error"] = True # Đánh dấu lỗi
+                                        st.rerun() # Rerun để hiện nút Retry
+                                except Exception as e:
+                                    st.error(f"Lỗi không xác định: {e}")
+                    
+                    # 4. Hiển thị kết quả (Nếu đã có)
+                    if proc["result"]:
+                        st.markdown(proc["result"])
+            else:
+                st.warning("⛔ Đã hết 5 lượt trả lời.")
+        else:
+            st.info("Bài học này chưa cập nhật.")
+
+    # --- MODULE 1: SPEAKING (CHIA 2 TAB) ---
+    elif menu == "🗣️ Speaking":
+        st.title("Luyện Tập Speaking")
+        
+        tab_class, tab_forecast = st.tabs(["📚 Bài Tập Trên Lớp", "🔮 Luyện Đề Forecast Q1/2026"])
+        
+        # === TAB 1: BÀI TẬP TRÊN LỚP (CŨ) ===
+        with tab_class:
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                lesson_choice = st.selectbox("Chọn bài học:", SPEAKING_MENU, key="class_lesson")
+            
+            if lesson_choice in SPEAKING_CONTENT:
+                with col2:
+                    q_list = SPEAKING_CONTENT[lesson_choice]
+                    question = st.selectbox("Câu hỏi:", q_list, key="class_q")
+                
+                # Logic cũ (Record & Feedback ngay lập tức)
+                attempts = st.session_state['speaking_attempts'].get(question, 0)
+                remaining = 5 - attempts
+                
+                st.markdown(f"**Topic:** {question}")
+                
+                if remaining > 0:
+                    st.info(f"⚡ Bạn còn **{remaining}** lượt trả lời cho câu này.")
+                    audio = st.audio_input("Ghi âm câu trả lời:", key=f"rec_class_{question}")
+                    
+                    if audio:
+                        # ... (Logic xử lý audio cũ giữ nguyên) ...
+                        audio.seek(0)
+                        audio_bytes = audio.read()
+                        audio_sig = hash(audio_bytes)
+                        state_key = f"proc_class_{question}"
+                        if state_key not in st.session_state: st.session_state[state_key] = {"sig": None, "result": None}
+                        proc = st.session_state[state_key]
+                        
+                        if proc["sig"] != audio_sig:
+                            if len(audio_bytes) < 1000: st.warning("File quá ngắn.")
+                            else:
+                                with st.spinner("Đang chấm điểm..."):
+                                    audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+                                # GỌI AI CHẤM NGẦM (ẨN)
+                                    prompt = f"""Role: Examiner. Assess IELTS Speaking Part 1 about '{data['p1_topic']}'. Transcript EXACTLY what user said (no auto-correct). Give Band Score & Feedback.
+                                ## GRADING RUBRIC (TIÊU CHÍ PHÂN LOẠI CỐT LÕI):
+
+                                * **BAND 9 (Native-like):**
+                                * **Fluency:** Trôi chảy tự nhiên, không hề vấp váp.
+                                * **Vocab:** Chính xác tuyệt đối, tinh tế.
+                                * **Pronunciation:** Hoàn hảo. Transcript sạch bóng, không có bất kỳ từ nào sai ngữ cảnh hay vô nghĩa.
+
+                                * **BAND 8 (Rất tốt):**
+                                * **Fluency:** Mạch lạc, hiếm khi lặp lại.
+                                * **Vocab:** Dùng điêu luyện Idioms/từ hiếm.
+                                * **Pronunciation:** Dễ hiểu xuyên suốt. Ngữ điệu tốt. Transcript chính xác 99%.
+
+                                * **BAND 7 (Tốt - Target):**
+                                * **Fluency:** Nói dài dễ dàng. Từ nối linh hoạt.
+                                * **Vocab:** Dùng được Collocation tự nhiên.
+                                * **Grammar:** Thường xuyên có câu phức không lỗi.
+                                * **Pronunciation:** Dễ hiểu. *(Lưu ý: Chấp nhận một vài lỗi nhỏ, nhưng nếu Transcript xuất hiện từ lạ/sai ngữ cảnh, hãy trừ điểm nhẹ).*
+
+                                * **BAND 6 (Khá):**
+                                * **Fluency:** Đôi khi mất mạch, từ nối máy móc.
+                                * **Vocab:** Đủ để bàn luận, biết Paraphrase.
+                                * **Grammar:** Có dùng câu phức nhưng thường xuyên sai.
+                                * **Pronunciation:** Rõ ràng phần lớn thời gian. *(Lưu ý: Nếu thấy từ vựng bị biến đổi thành từ khác nghe na ná - Sound-alike words - hoặc 1-2 đoạn vô nghĩa, hãy đánh dấu là Lỗi Phát Âm).*
+
+                                * **BAND 5 (Trung bình):**
+                                * **Fluency:** Ngắt quãng nhiều, lặp từ.
+                                * **Grammar:** Chỉ đúng khi dùng câu đơn.
+                                * **Pronunciation:** *(Dấu hiệu nhận biết: Transcript thường xuyên xuất hiện các từ vô nghĩa hoặc sai hoàn toàn ngữ cảnh do máy không nhận diện được âm).*
+
+                                * **BAND 4 (Hạn chế):**
+                                * **Fluency:** Câu cụt, ngắt quãng dài.
+                                * **Pronunciation:** Khó hiểu. Transcript gãy vụn, chứa nhiều từ không liên quan đến chủ đề.
+                                ## OUTPUT FORMAT (Vietnamese Markdown):
+                                Trả về kết quả chi tiết:
+
+                                ### TRANSCRIPT:
+                                "[Ghi lại chính xác từng âm thanh nghe được. Nếu học viên nói sai ngữ pháp hoặc phát âm sai từ nào, HÃY GHI LẠI Y NGUYÊN LỖI ĐÓ. Ví dụ: nói 'sink' thay vì 'think', hãy ghi 'sink'. TUYỆT ĐỐI KHÔNG TỰ ĐỘNG SỬA THÀNH CÂU ĐÚNG]"
+
+                                ### KẾT QUẢ: [Score - format 5.0, 5.5]
+
+                                ### PHÂN TÍCH CHI TIẾT:
+                                1. **Fluency & Coherence:** [Nhận xét độ trôi chảy, xử lý các chỗ ngắt ngứ, từ nối và cách phát triển ý logic, trọng tâm câu trả lời]
+                                2. **Lexical Resource:** [Nhận xét vốn từ, các idiomatic language dùng được liên quan đến topic câu hỏi]
+                                3. **Grammar:** [Nhận xét cấu trúc câu, ngữ pháp]
+                                4. **Pronunciation:** [Nhận xét phát âm, trọng âm, chunking, âm đuôi dựa trên file ghi âm]
+
+                                ### CẢI THIỆN (NÂNG BAND):
+                                *(Chỉ chọn ra tối đa 3-5 lỗi sai lớn nhất hoặc câu diễn đạt vụng về/Việt-lish nhất để sửa cho tự nhiên hơn. **TUYỆT ĐỐI KHÔNG** sửa những câu đã đúng/ổn).*
+
+                                **Lỗi 1 (Grammar/Word Choice):**
+                                * **Gốc:** "[Trích văn bản gốc]"
+                                * **Sửa:** "[Viết lại tự nhiên hơn - Natural Speaking]"
+                                * **Lý do:** [Giải thích ngắn gọn, nghĩa tiếng Việt]
+
+                                **Lỗi 2 (Unnatural Phrasing):**
+                                * **Gốc:** "..."
+                                * **Sửa:** "..."
+                                * **Lý do:** ...
+                                """
+                                    text_result = call_gemini(prompt, audio_data=audio_b64)
+                                    if text_result:
+                                        proc["result"] = text_result
+                                        proc["sig"] = audio_sig
+                                        st.session_state['speaking_attempts'][question] = attempts + 1
+                                        save_speaking_log(user['name'], user['class'], lesson_choice, question, text_result)
+                                        st.rerun()
+                        if proc["result"]: st.markdown(proc["result"])
+                else: st.warning("Hết lượt.")
+            else: st.info("Chưa có bài.")
+
+         # === TAB 2: FORECAST & LUYỆN TẬP (MỚI) ===
+        with tab_forecast:
+            # Chọn Phần thi: Part 1, Part 2, Part 3
+            part_mode = st.radio("Chọn phần thi:", ["Part 1", "Part 2", "Part 3"], horizontal=True)
+            
+            # --- LOGIC PART 1 ---
+            if part_mode == "Part 1":
+                topic_p1 = st.selectbox("Chọn chủ đề (Part 1):", list(FORECAST_PART1.keys()))
+                q_p1 = st.selectbox("Câu hỏi:", FORECAST_PART1[topic_p1])
+                st.write(f"**Question:** {q_p1}")
+                
+                audio_fc = st.audio_input("Trả lời:", key=f"rec_fc_p1_{q_p1}")
+                if audio_fc:
+                    # Tái sử dụng logic chấm điểm
+                    audio_fc.seek(0)
+                    audio_bytes_fc = audio_fc.read()
+                    if len(audio_bytes_fc) < 1000: st.warning("File quá ngắn.")
+                    else:
+                        with st.spinner("AI đang chấm điểm Part 1..."):
+                            audio_b64_fc = base64.b64encode(audio_bytes_fc).decode('utf-8')
+                            # DÙNG PROMPT GỐC
+                        
+                            prompt full = f"""Role: Examiner. Assess IELTS Speaking response for Part 1 Question: "{q_p1}". Transcript EXACTLY what user said (no auto-correct). Give Band Score & Feedback.
+                                ## GRADING RUBRIC (TIÊU CHÍ PHÂN LOẠI CỐT LÕI):
+
+                                * **BAND 9 (Native-like):**
+                                * **Fluency:** Trôi chảy tự nhiên, không hề vấp váp.
+                                * **Vocab:** Chính xác tuyệt đối, tinh tế.
+                                * **Pronunciation:** Hoàn hảo. Transcript sạch bóng, không có bất kỳ từ nào sai ngữ cảnh hay vô nghĩa.
+
+                                * **BAND 8 (Rất tốt):**
+                                * **Fluency:** Mạch lạc, hiếm khi lặp lại.
+                                * **Vocab:** Dùng điêu luyện Idioms/từ hiếm.
+                                * **Pronunciation:** Dễ hiểu xuyên suốt. Ngữ điệu tốt. Transcript chính xác 99%.
+
+                                * **BAND 7 (Tốt - Target):**
+                                * **Fluency:** Nói dài dễ dàng. Từ nối linh hoạt.
+                                * **Vocab:** Dùng được Collocation tự nhiên.
+                                * **Grammar:** Thường xuyên có câu phức không lỗi.
+                                * **Pronunciation:** Dễ hiểu. *(Lưu ý: Chấp nhận một vài lỗi nhỏ, nhưng nếu Transcript xuất hiện từ lạ/sai ngữ cảnh, hãy trừ điểm nhẹ).*
+
+                                * **BAND 6 (Khá):**
+                                * **Fluency:** Đôi khi mất mạch, từ nối máy móc.
+                                * **Vocab:** Đủ để bàn luận, biết Paraphrase.
+                                * **Grammar:** Có dùng câu phức nhưng thường xuyên sai.
+                                * **Pronunciation:** Rõ ràng phần lớn thời gian. *(Lưu ý: Nếu thấy từ vựng bị biến đổi thành từ khác nghe na ná - Sound-alike words - hoặc 1-2 đoạn vô nghĩa, hãy đánh dấu là Lỗi Phát Âm).*
+
+                                * **BAND 5 (Trung bình):**
+                                * **Fluency:** Ngắt quãng nhiều, lặp từ.
+                                * **Grammar:** Chỉ đúng khi dùng câu đơn.
+                                * **Pronunciation:** *(Dấu hiệu nhận biết: Transcript thường xuyên xuất hiện các từ vô nghĩa hoặc sai hoàn toàn ngữ cảnh do máy không nhận diện được âm).*
+
+                                * **BAND 4 (Hạn chế):**
+                                * **Fluency:** Câu cụt, ngắt quãng dài.
+                                * **Pronunciation:** Khó hiểu. Transcript gãy vụn, chứa nhiều từ không liên quan đến chủ đề.
+                                ## OUTPUT FORMAT (Vietnamese Markdown):
+                                Trả về kết quả chi tiết:
+
+                                ### TRANSCRIPT:
+                                "[Ghi lại chính xác từng âm thanh nghe được. Nếu học viên nói sai ngữ pháp hoặc phát âm sai từ nào, HÃY GHI LẠI Y NGUYÊN LỖI ĐÓ. Ví dụ: nói 'sink' thay vì 'think', hãy ghi 'sink'. TUYỆT ĐỐI KHÔNG TỰ ĐỘNG SỬA THÀNH CÂU ĐÚNG]"
+
+                                ### KẾT QUẢ: [Score - format 5.0, 5.5]
+
+                                ### PHÂN TÍCH CHI TIẾT:
+                                1. **Fluency & Coherence:** [Nhận xét độ trôi chảy, xử lý các chỗ ngắt ngứ, từ nối và cách phát triển ý logic, trọng tâm câu trả lời]
+                                2. **Lexical Resource:** [Nhận xét vốn từ, các idiomatic language dùng được liên quan đến topic câu hỏi]
+                                3. **Grammar:** [Nhận xét cấu trúc câu, ngữ pháp]
+                                4. **Pronunciation:** [Nhận xét phát âm, trọng âm, chunking, âm đuôi dựa trên file ghi âm]
+
+                                ### CẢI THIỆN (NÂNG BAND):
+                                *(Chỉ chọn ra tối đa 3-5 lỗi sai lớn nhất hoặc câu diễn đạt vụng về/Việt-lish nhất để sửa cho tự nhiên hơn. **TUYỆT ĐỐI KHÔNG** sửa những câu đã đúng/ổn).*
+
+                                **Lỗi 1 (Grammar/Word Choice):**
+                                * **Gốc:** "[Trích văn bản gốc]"
+                                * **Sửa:** "[Viết lại tự nhiên hơn - Natural Speaking]"
+                                * **Lý do:** [Giải thích ngắn gọn, nghĩa tiếng Việt]
+
+                                **Lỗi 2 (Unnatural Phrasing):**
+                                * **Gốc:** "..."
+                                * **Sửa:** "..."
+                                * **Lý do:** ...
+                                """
+                            res = call_gemini(prompt_full, audio_data=audio_b64_fc)
+                            if res: st.markdown(res)
+
+            # --- LOGIC PART 2 ---
+            elif part_mode == "Part 2":
+                # Lấy danh sách Topic từ FORECAST_PART23 keys
+                topic_p2 = st.selectbox("Chọn đề bài (Describe a/an...):", list(FORECAST_PART23.keys()))
+                data_p2 = FORECAST_PART23[topic_p2]
+                
+                st.info(f"**Cue Card:**\n\n{data_p2['cue_card']}")
+                st.write("⏱️ Bạn có 1 phút chuẩn bị và 2 phút nói.")
+                
+                if st.button("Bắt đầu 1 phút chuẩn bị", key="timer_p2"):
+                    with st.empty():
+                        for i in range(60, 0, -1):
+                            st.write(f"⏳ Thời gian chuẩn bị: {i}s")
+                            time.sleep(1)
+                        st.write("⌛ Hết giờ chuẩn bị! Hãy ghi âm ngay.")
+
+                audio_fc_p2 = st.audio_input("Trả lời Part 2:", key=f"rec_fc_p2_{topic_p2}")
+                if audio_fc_p2:
+                    audio_fc_p2.seek(0)
+                    audio_bytes_p2 = audio_fc_p2.read()
+                    if len(audio_bytes_p2) < 1000: st.warning("File quá ngắn.")
+                    else:
+                        with st.spinner("AI đang chấm điểm Part 2..."):
+                            audio_b64_p2 = base64.b64encode(audio_bytes_p2).decode('utf-8')
+                            
+                            # PROMPT FULL COPY
+                            prompt_full_p2 = f"""Role: Examiner. Assess IELTS Speaking response for Part 2 "{data_p2['cue_card']}". Transcript EXACTLY what user said (no auto-correct). Give Band Score & Feedback.
+                                ## GRADING RUBRIC (TIÊU CHÍ PHÂN LOẠI CỐT LÕI):
+
+                                * **BAND 9 (Native-like):**
+                                * **Fluency:** Trôi chảy tự nhiên, không hề vấp váp.
+                                * **Vocab:** Chính xác tuyệt đối, tinh tế.
+                                * **Pronunciation:** Hoàn hảo. Transcript sạch bóng, không có bất kỳ từ nào sai ngữ cảnh hay vô nghĩa.
+
+                                * **BAND 8 (Rất tốt):**
+                                * **Fluency:** Mạch lạc, hiếm khi lặp lại.
+                                * **Vocab:** Dùng điêu luyện Idioms/từ hiếm.
+                                * **Pronunciation:** Dễ hiểu xuyên suốt. Ngữ điệu tốt. Transcript chính xác 99%.
+
+                                * **BAND 7 (Tốt - Target):**
+                                * **Fluency:** Nói dài dễ dàng. Từ nối linh hoạt.
+                                * **Vocab:** Dùng được Collocation tự nhiên.
+                                * **Grammar:** Thường xuyên có câu phức không lỗi.
+                                * **Pronunciation:** Dễ hiểu. *(Lưu ý: Chấp nhận một vài lỗi nhỏ, nhưng nếu Transcript xuất hiện từ lạ/sai ngữ cảnh, hãy trừ điểm nhẹ).*
+
+                                * **BAND 6 (Khá):**
+                                * **Fluency:** Đôi khi mất mạch, từ nối máy móc.
+                                * **Vocab:** Đủ để bàn luận, biết Paraphrase.
+                                * **Grammar:** Có dùng câu phức nhưng thường xuyên sai.
+                                * **Pronunciation:** Rõ ràng phần lớn thời gian. *(Lưu ý: Nếu thấy từ vựng bị biến đổi thành từ khác nghe na ná - Sound-alike words - hoặc 1-2 đoạn vô nghĩa, hãy đánh dấu là Lỗi Phát Âm).*
+
+                                * **BAND 5 (Trung bình):**
+                                * **Fluency:** Ngắt quãng nhiều, lặp từ.
+                                * **Grammar:** Chỉ đúng khi dùng câu đơn.
+                                * **Pronunciation:** *(Dấu hiệu nhận biết: Transcript thường xuyên xuất hiện các từ vô nghĩa hoặc sai hoàn toàn ngữ cảnh do máy không nhận diện được âm).*
+
+                                * **BAND 4 (Hạn chế):**
+                                * **Fluency:** Câu cụt, ngắt quãng dài.
+                                * **Pronunciation:** Khó hiểu. Transcript gãy vụn, chứa nhiều từ không liên quan đến chủ đề.
+                                ## OUTPUT FORMAT (Vietnamese Markdown):
+                                Trả về kết quả chi tiết:
+
+                                ### TRANSCRIPT:
+                                "[Ghi lại chính xác từng âm thanh nghe được. Nếu học viên nói sai ngữ pháp hoặc phát âm sai từ nào, HÃY GHI LẠI Y NGUYÊN LỖI ĐÓ. Ví dụ: nói 'sink' thay vì 'think', hãy ghi 'sink'. TUYỆT ĐỐI KHÔNG TỰ ĐỘNG SỬA THÀNH CÂU ĐÚNG]"
+
+                                ### KẾT QUẢ: [Score - format 5.0, 5.5]
+
+                                ### PHÂN TÍCH CHI TIẾT:
+                                1. **Fluency & Coherence:** [Nhận xét độ trôi chảy, xử lý các chỗ ngắt ngứ, từ nối và cách phát triển ý logic, trọng tâm câu trả lời]
+                                2. **Lexical Resource:** [Nhận xét vốn từ, các idiomatic language dùng được liên quan đến topic câu hỏi]
+                                3. **Grammar:** [Nhận xét cấu trúc câu, ngữ pháp]
+                                4. **Pronunciation:** [Nhận xét phát âm, trọng âm, chunking, âm đuôi dựa trên file ghi âm]
+
+                                ### CẢI THIỆN (NÂNG BAND):
+                                *(Chỉ chọn ra tối đa 3-5 lỗi sai lớn nhất hoặc câu diễn đạt vụng về/Việt-lish nhất để sửa cho tự nhiên hơn. **TUYỆT ĐỐI KHÔNG** sửa những câu đã đúng/ổn).*
+
+                                **Lỗi 1 (Grammar/Word Choice):**
+                                * **Gốc:** "[Trích văn bản gốc]"
+                                * **Sửa:** "[Viết lại tự nhiên hơn - Natural Speaking]"
+                                * **Lý do:** [Giải thích ngắn gọn, nghĩa tiếng Việt]
+
+                                **Lỗi 2 (Unnatural Phrasing):**
+                                * **Gốc:** "..."
+                                * **Sửa:** "..."
+                                * **Lý do:** ...
+                                """
+                            res = call_gemini(prompt_full_p2, audio_data=audio_b64_p2)
+                            if res: st.markdown(res)
+                            # --- LOGIC PART 3 ---
+            else:
+                topic_p3 = st.selectbox("Chọn chủ đề (Part 3):", list(FORECAST_PART23.keys()))
+                data_p3 = FORECAST_PART23[topic_p3]
+                
+                st.write("**Part 3 Questions:**")
+                for q in data_p3['part3']: st.write(f"- {q}")
+                
+                audio_fc_p3 = st.audio_input("Trả lời Part 3 (Trả lời tất cả câu hỏi trong 1 lần):", key=f"rec_fc_p3_{topic_p3}")
+                if audio_fc_p3:
+                    audio_fc_p3.seek(0)
+                    audio_bytes_p3 = audio_fc_p3.read()
+                    if len(audio_bytes_p3) < 1000: st.warning("File quá ngắn.")
+                    else:
+                        with st.spinner("AI đang chấm điểm Part 3..."):
+                            audio_b64_p3 = base64.b64encode(audio_bytes_p3).decode('utf-8')
+                            
+                            # PROMPT FULL COPY
+                            prompt_full_p3 = f"""Role: Examiner. Assess IELTS Speaking response for Part 3 "{data_p3['part3']}". Transcript EXACTLY what user said (no auto-correct). Give Band Score & Feedback.
+                                ## GRADING RUBRIC (TIÊU CHÍ PHÂN LOẠI CỐT LÕI):
+
+                                * **BAND 9 (Native-like):**
+                                * **Fluency:** Trôi chảy tự nhiên, không hề vấp váp.
+                                * **Vocab:** Chính xác tuyệt đối, tinh tế.
+                                * **Pronunciation:** Hoàn hảo. Transcript sạch bóng, không có bất kỳ từ nào sai ngữ cảnh hay vô nghĩa.
+
+                                * **BAND 8 (Rất tốt):**
+                                * **Fluency:** Mạch lạc, hiếm khi lặp lại.
+                                * **Vocab:** Dùng điêu luyện Idioms/từ hiếm.
+                                * **Pronunciation:** Dễ hiểu xuyên suốt. Ngữ điệu tốt. Transcript chính xác 99%.
+
+                                * **BAND 7 (Tốt - Target):**
+                                * **Fluency:** Nói dài dễ dàng. Từ nối linh hoạt.
+                                * **Vocab:** Dùng được Collocation tự nhiên.
+                                * **Grammar:** Thường xuyên có câu phức không lỗi.
+                                * **Pronunciation:** Dễ hiểu. *(Lưu ý: Chấp nhận một vài lỗi nhỏ, nhưng nếu Transcript xuất hiện từ lạ/sai ngữ cảnh, hãy trừ điểm nhẹ).*
+
+                                * **BAND 6 (Khá):**
+                                * **Fluency:** Đôi khi mất mạch, từ nối máy móc.
+                                * **Vocab:** Đủ để bàn luận, biết Paraphrase.
+                                * **Grammar:** Có dùng câu phức nhưng thường xuyên sai.
+                                * **Pronunciation:** Rõ ràng phần lớn thời gian. *(Lưu ý: Nếu thấy từ vựng bị biến đổi thành từ khác nghe na ná - Sound-alike words - hoặc 1-2 đoạn vô nghĩa, hãy đánh dấu là Lỗi Phát Âm).*
+
+                                * **BAND 5 (Trung bình):**
+                                * **Fluency:** Ngắt quãng nhiều, lặp từ.
+                                * **Grammar:** Chỉ đúng khi dùng câu đơn.
+                                * **Pronunciation:** *(Dấu hiệu nhận biết: Transcript thường xuyên xuất hiện các từ vô nghĩa hoặc sai hoàn toàn ngữ cảnh do máy không nhận diện được âm).*
+
+                                * **BAND 4 (Hạn chế):**
+                                * **Fluency:** Câu cụt, ngắt quãng dài.
+                                * **Pronunciation:** Khó hiểu. Transcript gãy vụn, chứa nhiều từ không liên quan đến chủ đề.
+                                ## OUTPUT FORMAT (Vietnamese Markdown):
+                                Trả về kết quả chi tiết:
+
+                                ### TRANSCRIPT:
+                                "[Ghi lại chính xác từng âm thanh nghe được. Nếu học viên nói sai ngữ pháp hoặc phát âm sai từ nào, HÃY GHI LẠI Y NGUYÊN LỖI ĐÓ. Ví dụ: nói 'sink' thay vì 'think', hãy ghi 'sink'. TUYỆT ĐỐI KHÔNG TỰ ĐỘNG SỬA THÀNH CÂU ĐÚNG]"
+
+                                ### KẾT QUẢ: [Score - format 5.0, 5.5]
+
+                                ### PHÂN TÍCH CHI TIẾT:
+                                1. **Fluency & Coherence:** [Nhận xét độ trôi chảy, xử lý các chỗ ngắt ngứ, từ nối và cách phát triển ý logic, trọng tâm câu trả lời]
+                                2. **Lexical Resource:** [Nhận xét vốn từ, các idiomatic language dùng được liên quan đến topic câu hỏi]
+                                3. **Grammar:** [Nhận xét cấu trúc câu, ngữ pháp]
+                                4. **Pronunciation:** [Nhận xét phát âm, trọng âm, chunking, âm đuôi dựa trên file ghi âm]
+
+                                ### CẢI THIỆN (NÂNG BAND):
+                                *(Chỉ chọn ra tối đa 3-5 lỗi sai lớn nhất hoặc câu diễn đạt vụng về/Việt-lish nhất để sửa cho tự nhiên hơn. **TUYỆT ĐỐI KHÔNG** sửa những câu đã đúng/ổn).*
+
+                                **Lỗi 1 (Grammar/Word Choice):**
+                                * **Gốc:** "[Trích văn bản gốc]"
+                                * **Sửa:** "[Viết lại tự nhiên hơn - Natural Speaking]"
+                                * **Lý do:** [Giải thích ngắn gọn, nghĩa tiếng Việt]
+
+                                **Lỗi 2 (Unnatural Phrasing):**
+                                * **Gốc:** "..."
+                                * **Sửa:** "..."
+                                * **Lý do:** ...
+                                """
+                            res = call_gemini(prompt_full_p3, audio_data=audio_b64_p3)
+                            if res: st.markdown(res)
+
+    # --- MODULE 2: READING (SPLIT VIEW & REALTIME TIMER) ---
+    elif menu == "📖 Reading":
+        st.title("📖 Luyện Reading & Từ Vựng")
+        
+        # --- CẬP NHẬT MENU DYNAMIC (ĐÃ SỬA LỖI MẤT BÀI 3) ---
+        # Đảm bảo bài Lesson 3 luôn hiển thị đúng
+        reading_options = [
+            "Lesson 2: Marine Chronometer",
+            "Lesson 3: Australian Agricultural Innovations"
+        ] + [f"Lesson {i}" for i in range(1, 11) if i not in [2, 3]]
+        
+        lesson_choice = st.selectbox("Chọn bài đọc:", reading_options)
+        
+        # Reset session khi đổi bài
+        if 'current_reading_lesson' not in st.session_state or st.session_state['current_reading_lesson'] != lesson_choice:
+            st.session_state['current_reading_lesson'] = lesson_choice
+            st.session_state['reading_session'] = {'status': 'intro', 'mode': None, 'end_time': None}
+            st.session_state['reading_highlight'] = ""
+            if 'reading_intro_text' in st.session_state: del st.session_state['reading_intro_text']
+
+        if lesson_choice in READING_CONTENT:
+            data = READING_CONTENT[lesson_choice]
+            
+            tab1, tab2 = st.tabs(["Làm Bài Đọc Hiểu", "Bài Tập Từ Vựng AI"])
+            
+            # TAB 1: BÀI ĐỌC CHÍNH (Split View)
+            with tab1:
+                # --- TRẠNG THÁI 1: GIỚI THIỆU & CHỌN CHẾ ĐỘ ---
+                if st.session_state['reading_session']['status'] == 'intro':
+                    st.info(f"### {data['title']}")
+                    
+                    # LOGIC INTRO CỐ ĐỊNH (KHÔNG DÙNG AI)
+                    intro_text = ""
+                    # 1. Lesson 2 cho lớp PLA
+                    if "Lesson 2" in lesson_choice and user['class'].startswith("PLA"):
+                         intro_text = "Thời chưa có vệ tinh, các thủy thủ rất sợ đi biển xa vì họ không biết mình đang ở đâu. Cách duy nhất để xác định vị trí là phải biết giờ chính xác. Nhưng khổ nỗi, đồng hồ quả lắc ngày xưa cứ mang lên tàu rung lắc là chạy sai hết. Bài này kể về hành trình chế tạo ra chiếc đồng hồ đi biển đầu tiên, thứ đã cứu mạng hàng ngàn thủy thủ."
+                    # 2. Lesson 3 (Cho mọi lớp hoặc PLA)
+                    elif "Lesson 3" in lesson_choice:
+                         intro_text = "Làm nông nghiệp ở Úc khó hơn nhiều so với ở Anh hay châu Âu vì đất đai ở đây rất khô và thiếu dinh dưỡng. Vào cuối thế kỷ 19, những người nông dân Úc đứng trước nguy cơ phá sản vì các phương pháp canh tác cũ không còn hiệu quả.\nBài đọc này sẽ cho các bạn thấy họ đã xoay sở như thế nào bằng công nghệ. Từ việc chế tạo ra chiếc cày đặc biệt có thể tự 'nhảy' qua gốc cây, cho đến việc lai tạo giống lúa mì chịu hạn. Chính những sáng kiến này đã biến nước Úc từ một nơi chỉ nuôi cừu thành một cường quốc xuất khẩu lúa mì thế giới."
+                    
+                    if intro_text:
+                        st.markdown(f"**Giới thiệu về bài đọc:**\n\n{intro_text}")
+                    
+                    st.write("**Thông tin bài thi:**")
+                    col_info1, col_info2 = st.columns(2)
+                    if "questions_fill" in data:
+                        col_info1.write("- **Dạng bài:** Fill in the blanks")
+                        col_info2.write(f"- **Số lượng:** {len(data['questions_fill'])} câu hỏi")
+                    elif "questions_mc" in data:
+                        col_info1.write("- **Dạng bài:** Multiple Choice")
+                        col_info2.write(f"- **Số lượng:** {len(data['questions_mc'])} câu hỏi")
+                        
+                    st.markdown("---")
+                    c1, c2 = st.columns(2)
+                    if c1.button("Luyện Tập (Không giới hạn thời gian)"):
+                        st.session_state['reading_session']['status'] = 'doing'; st.session_state['reading_session']['mode'] = 'practice'; st.rerun()
+                    if c2.button("Luyện Thi (20 Phút)"):
+                        st.session_state['reading_session']['status'] = 'doing'; st.session_state['reading_session']['mode'] = 'exam'
+                        st.session_state['reading_session']['end_time'] = datetime.now() + timedelta(minutes=20); st.rerun()
+
+                # --- TRẠNG THÁI 2: DOING ---
+                elif st.session_state['reading_session']['status'] == 'doing':
+                    # Xử lý Timer (Javascript Realtime Countdown)
+                    timer_html = ""
+                    if st.session_state['reading_session']['mode'] == 'exam':
+                        end_time = st.session_state['reading_session']['end_time']
+                        remaining_seconds = (end_time - datetime.now()).total_seconds()
+                        
+                        if remaining_seconds > 0:
+                            # Javascript để đếm ngược mượt mà không cần reload trang
+                            timer_html = f"""
+                            <div style="font-size: 20px; font-weight: bold; color: #d35400; margin-bottom: 10px; font-family: 'Segoe UI', sans-serif;">
+                                ⏳ Thời gian còn lại: <span id="timer"></span>
+                            </div>
+                            <script>
+                            var timeLeft = {int(remaining_seconds)};
+                            var timerElement = document.getElementById("timer");
+                            
+                            var countdown = setInterval(function() {{
+                                var minutes = Math.floor(timeLeft / 60);
+                                var seconds = timeLeft % 60;
+                                timerElement.innerHTML = minutes + "m " + (seconds < 10 ? "0" : "") + seconds + "s";
+                                
+                                timeLeft -= 1;
+                                if (timeLeft < 0) {{
+                                    clearInterval(countdown);
+                                    timerElement.innerHTML = "HẾT GIỜ!";
+                                    alert("Đã hết giờ làm bài! Vui lòng nộp bài.");
+                                }}
+                            }}, 1000);
+                            </script>
+                            """
+                            st.components.v1.html(timer_html, height=50)
+                        else:
+                            st.error("🛑 ĐÃ HẾT GIỜ! Vui lòng nộp bài ngay.")
+                    else:
+                        st.success("🟢 Chế độ Luyện Tập (Thoải mái thời gian)")
+
+                    c_text, c_quiz = st.columns([1, 1], gap="medium")
+                    
+                    with c_text:
+                        st.subheader("Bài đọc")
+                        # --- Cập nhật UI: Hướng dẫn bôi đen highlight ---
+                        st.caption("💡 **Mẹo:** Bôi đen văn bản để highlight nhanh. (Lưu ý: Highlight sẽ mất khi nộp bài).")
+
+                        display_text = data['text']
+                        # Xóa title cũ trong text nếu có để tránh lặp
+                        if "###" in display_text:
+                             display_text = re.sub(r"###.*?\n", "", display_text)
+                        
+                        # Hiển thị bài đọc
+                        html_content = f"<h2>{data['title']}</h2>" + display_text.replace("\n", "<br>")
+                        st.markdown(f"<div class='scroll-container'><div class='reading-text'>{html_content}</div></div>", unsafe_allow_html=True)
+
+                    with c_quiz:
+                        st.subheader("Câu Hỏi")
+                        with st.container(height=600):
+                            with st.form("read_exam_form"):
+                                ans = {}
+                                # DẠNG 1: ĐIỀN TỪ
+                                if "questions_fill" in data:
+                                    st.markdown("**Questions: Fill in the blanks (NO MORE THAN TWO WORDS)**")
+                                    for q in data['questions_fill']:
+                                        st.markdown(f"<div class='question-text'>{q['q']}</div>", unsafe_allow_html=True)
+                                        ans[q['id']] = st.text_input(f"Answer {q['id']}", label_visibility="collapsed")
+                                        st.write("")
+                                # DẠNG 2: TRẮC NGHIỆM (MULTIPLE CHOICE)
+                                elif "questions_mc" in data:
+                                    st.markdown("**Questions: Choose the correct letter, A, B or C.**")
+                                    for q in data['questions_mc']:
+                                        st.markdown(f"<div class='question-text'><strong>{q['q']}</strong></div>", unsafe_allow_html=True)
+                                        ans[q['id']] = st.radio(f"Select answer for {q['id']}", q['options'], key=q['id'], label_visibility="collapsed")
+                                        st.write("")
+                                
+                                
+                                if st.form_submit_button("NỘP BÀI"):
+                                    st.session_state['reading_session']['status'] = 'result'
+                                    st.session_state['reading_session']['user_answers'] = ans
+                                    st.rerun()
+
+                # --- TRẠNG THÁI 3: KẾT QUẢ & GIẢI THÍCH ---
+                elif st.session_state['reading_session']['status'] == 'result':
+                    st.subheader("Kết Quả Bài Làm")
+                    user_answers = st.session_state['reading_session']['user_answers']
+                    score = 0
+                    
+                    col_res_L, col_res_R = st.columns([1, 1])
+                    
+                    # Hiển thị lại bài đọc để đối chiếu
+                    with col_res_L:
+                        with st.expander("Xem lại bài đọc", expanded=False):
+                            st.markdown(data['text'])
+                    
+                    with col_res_R:
+                        # Xác định danh sách câu hỏi đang làm
+                        q_list = data.get('questions_fill') or data.get('questions_mc')
+                        
+                        for q in q_list:
+                            # Lấy đáp án người dùng (xử lý chữ hoa thường nếu là điền từ)
+                            u_ans_raw = user_answers.get(q['id'], "")
+                            
+                            # Logic chấm điểm
+                            if "questions_fill" in data:
+                                u_ans = str(u_ans_raw).strip().lower()
+                                c_ans = q['a'].lower()
+                                is_correct = u_ans == c_ans
+                            else: # Trắc nghiệm
+                                # Đáp án trắc nghiệm lưu dạng "A. Text...", ta so sánh ký tự đầu
+                                u_ans = str(u_ans_raw)
+                                c_ans = q['a']
+                                is_correct = u_ans == c_ans
+                            
+                            if is_correct: score += 1
+                            
+                            if is_correct:
+                                st.success(f"✅ {q['q']}")
+                            else:
+                                st.error(f"❌ {q['q']}")
+                                st.markdown(f"**Bạn chọn:** {u_ans_raw} | **Đáp án đúng:** {q['a']}")
+                            
+                            # Luôn hiện giải thích
+                            st.markdown(f"<div class='explanation-box'>💡 <b>Giải thích:</b> {q['exp']}</div>", unsafe_allow_html=True)
+                            st.write("---")
+
+                        st.success(f"Tổng điểm: {score}/{len(q_list)}")
+                        
+                        # Lưu điểm
+                        save_reading_log(user['name'], user['class'], lesson_choice, score, len(q_list), st.session_state['reading_session']['mode'])
+                        
+                        if st.button("Làm lại bài này"):
+                            st.session_state['reading_session'] = {'status': 'intro', 'mode': None, 'end_time': None}
+                            st.rerun()
+
+                # --- TRẠNG THÁI 3: KẾT QUẢ & GIẢI THÍCH ---
+                elif st.session_state['reading_session']['status'] == 'result':
+                    st.subheader("Kết Quả Bài Làm")
+                    user_answers = st.session_state['reading_session']['user_answers']
+                    score = 0
+                    
+                    col_res_L, col_res_R = st.columns([1, 1])
+                    
+                    # Hiển thị lại bài đọc để đối chiếu
+                    with col_res_L:
+                        with st.expander("Xem lại bài đọc", expanded=False):
+                            st.markdown(data['text'])
+                    
+                    with col_res_R:
+                        # Xác định danh sách câu hỏi đang làm
+                        q_list = data.get('questions_fill') or data.get('questions_mc')
+                        
+                        for q in q_list:
+                            # Lấy đáp án người dùng (xử lý chữ hoa thường nếu là điền từ)
+                            u_ans_raw = user_answers.get(q['id'], "")
+                            
+                            # Logic chấm điểm
+                            if "questions_fill" in data:
+                                u_ans = str(u_ans_raw).strip().lower()
+                                c_ans = q['a'].lower()
+                                is_correct = u_ans == c_ans
+                            else: # Trắc nghiệm
+                                # Đáp án trắc nghiệm lưu dạng "A. Text...", ta so sánh ký tự đầu
+                                u_ans = str(u_ans_raw)
+                                c_ans = q['a']
+                                is_correct = u_ans == c_ans
+                            
+                            if is_correct: score += 1
+                            
+                            if is_correct:
+                                st.success(f"✅ {q['q']}")
+                            else:
+                                st.error(f"❌ {q['q']}")
+                                st.markdown(f"**Bạn chọn:** {u_ans_raw} | **Đáp án đúng:** {q['a']}")
+                            
+                            # Luôn hiện giải thích
+                            st.markdown(f"<div class='explanation-box'>💡 <b>Giải thích:</b> {q['exp']}</div>", unsafe_allow_html=True)
+                            st.write("---")
+
+                        st.success(f"Tổng điểm: {score}/{len(q_list)}")
+                        
+                        # Lưu điểm
+                        save_reading_log(user['name'], user['class'], lesson_choice, score, len(q_list), st.session_state['reading_session']['mode'])
+                        
+                        if st.button("Làm lại bài này"):
+                            st.session_state['reading_session'] = {'status': 'intro', 'mode': None, 'end_time': None}
+                            st.rerun()
+
+
+    # --- MODULE 3: LISTENING (FIX LỖI & TỐI ƯU) ---
+    elif menu == "🎧 Listening":
+        st.title("Luyện Nghe Chủ Động")
+        st.info("Chọn chủ đề -> Nhận gợi ý Kênh -> Tìm Script -> Dán vào để học.")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            topic = st.selectbox("Chọn chủ đề:", LISTENING_TOPICS)
+        with col2:
+            duration = st.selectbox("Thời lượng:", ["Ngắn (3-5 phút)", "Trung bình (10-15 phút)", "Dài (> 30 phút)"])
+            
+        if st.button("🔍 Tìm Kênh Phù Hợp"):
+            with st.spinner("Đang tìm kiếm..."):
+                # Prompt
+                prompt = f"""
+                Suggest 3-4 specific Youtube Channels or Podcasts suitable for IELTS Student Level {user['level']['level']} regarding topic "{topic}".
+                Output in Vietnamese.
+                Format:
+                1. **[Name of Channel/Podcast]**
+                   - **Lý do phù hợp:** [Explain clearly why this fits level {user['level']['level']}]
+                   - **Từ khóa tìm kiếm:** [Exact keyword to type in Youtube/Google]
+                """
+                result = call_gemini(prompt)
+                if result:
+                    st.markdown(result)
+                else:
+                    st.error("Hệ thống đang bận. Bạn vui lòng bấm nút lại lần nữa nhé!")
+
+        st.divider()
+        st.subheader("Phân tích Script")
+        script_input = st.text_area("Dán Script vào đây:", height=200)
+        
+        if st.button("Dịch & Highlight"):
+            if script_input:
+                with st.spinner("Đang phân tích..."):
+                    prompt = f"""
+                    Translate the following script to Vietnamese (Sentence by sentence or Paragraph).
+                    Then, highlight 5 vocabulary words suitable for IELTS Band {user['level']['level']}. Explain them in Vietnamese context.
+                    Script: {script_input[:2500]}
+                    """
+                    result = call_gemini(prompt)
+                    if result:
+                        st.markdown(result)
+                    else:
+                        st.error("Script quá dài hoặc hệ thống bận.")
+            else:
+                st.warning("Vui lòng dán script.")
