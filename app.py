@@ -217,7 +217,7 @@ HOMEWORK_CONFIG = {
     },
     "ELITE": {
         "Speaking": [], 
-        "Reading":  [], 
+        "Reading":  [], # Reading trống -> Phải hiển thị "Không có bài tập" chứ ko hiện Lesson 2
         "Writing":  ["Lesson 3: Education & Society"]
     },
     "DIA": {
@@ -805,26 +805,27 @@ if 'user' not in st.session_state or st.session_state['user'] is None:
 else:
     user = st.session_state['user']
     
-    # --- FIX: LOGIC GIAO BÀI TẬP THEO LỚP ---
-    assigned_homework = get_assignments(user['class'])
+    # --- LOGIC PHÂN QUYỀN MỚI (STRICT MODE) ---
+    assigned_homework, is_class_configured = get_assignments_status(user['class'])
     
-    # 1. Speaking
-    if assigned_homework["Speaking"]:
-        current_speaking_menu = assigned_homework["Speaking"]
-    else:
-        current_speaking_menu = SPEAKING_MENU 
+    # Hàm hỗ trợ lấy menu chuẩn xác
+    def get_menu_for_skill(skill_key, default_menu):
+        if is_class_configured:
+            # Nếu lớp ĐÃ ĐƯỢC CẤU HÌNH trong hệ thống:
+            # - Trả về list bài tập (nếu có)
+            # - Nếu list rỗng, trả về list chứa thông báo "Chưa có bài"
+            # - TUYỆT ĐỐI KHÔNG trả về default_menu (tránh hiện bài của lớp khác)
+            if assigned_homework.get(skill_key):
+                return assigned_homework[skill_key]
+            else:
+                return ["(Chưa có bài tập)"] 
+        else:
+            # Nếu lớp LẠ (Admin/Test): Hiện full menu mặc định
+            return default_menu
 
-    # 2. Reading
-    if assigned_homework["Reading"]:
-        current_reading_menu = assigned_homework["Reading"]
-    else:
-        current_reading_menu = READING_MENU
-
-    # 3. Writing
-    if assigned_homework["Writing"]:
-        current_writing_menu = assigned_homework["Writing"]
-    else:
-        current_writing_menu = WRITING_MENU 
+    current_speaking_menu = get_menu_for_skill("Speaking", SPEAKING_MENU)
+    current_reading_menu = get_menu_for_skill("Reading", READING_MENU)
+    current_writing_menu = get_menu_for_skill("Writing", WRITING_MENU)
 
     with st.sidebar:
         st.write(f"👤 **{user['name']}**")
