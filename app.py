@@ -217,8 +217,13 @@ HOMEWORK_CONFIG = {
     },
     "ELITE": {
         "Speaking": [], 
-        "Reading":  [], # Reading trống -> Phải hiển thị "Không có bài tập" chứ ko hiện Lesson 2
-        "Writing":  ["Lesson 3: Education & Society"]
+        "Reading":  [], 
+        "Writing":  [
+            "Lesson 3: Education & Society",
+            "Lesson 4: Salt Intake (Task 1)",
+            "Lesson 5: News Media (Task 2)",
+            "Lesson 6: Easternburg Map (Task 1)"
+        ]
     },
     "DIA": {
         "Speaking": [], "Reading": [], "Writing": []
@@ -551,22 +556,37 @@ From early days it had been obvious that English and European sheep breeds had t
 
     
 # WRITING CONTENT (Chỉ lớp ELITE)
+# WRITING CONTENT
 WRITING_CONTENT = {
     "Lesson 3: Education & Society": {
-        "task_type": "Task 2",
+        "type": "Task 2",
         "time": 40,
-        "question": """
-### 📝 IELTS Writing Task 2
-
+        "question": """### 📝 IELTS Writing Task 2
 **Some people think that parents should teach children how to be good members of society. Others, however, believe that school is the place to learn this.**
-
-**Instructions:**
-* Discuss both these views and give your own opinion.
-* Give reasons for your answer and include any relevant examples from your own knowledge or experience.
-
----
-*Write at least 250 words.*
-"""
+Discuss both these views and give your own opinion."""
+    },
+    "Lesson 4: Salt Intake (Task 1)": {
+        "type": "Task 1",
+        "time": 20,
+        "image_url": "https://drive.google.com/uc?export=view&id=1du4nIQMhHe5uoqyiy9-MNItYpQTaKUht",
+        "question": """### 📝 IELTS Writing Task 1
+**The chart shows information about salt intake in the US in 2000.**
+Summarise the information by selecting and reporting the main features, and make comparisons where relevant."""
+    },
+    "Lesson 5: News Media (Task 2)": {
+        "type": "Task 2",
+        "time": 40,
+        "question": """### 📝 IELTS Writing Task 2
+**Some people think that the news media has become much more influential in people's lives today and it is a negative development.**
+Do you agree or disagree?"""
+    },
+    "Lesson 6: Easternburg Map (Task 1)": {
+        "type": "Task 1",
+        "time": 20,
+        "image_url": "https://drive.google.com/uc?export=view&id=1du4nIQMhHe5uoqyiy9-MNItYpQTaKUht",
+        "question": """### 📝 IELTS Writing Task 1
+**The diagrams below show the town of Easternburg in 1995 and the present day.**
+Summarise the information by selecting and reporting the main features, and make comparisons where relevant."""
     }
 }
 # --- HÀM TẠO MENU TỰ ĐỘNG (Auto-generate Menu with "Sắp ra mắt" status) ---
@@ -724,43 +744,62 @@ except:
     st.error("⚠️ Lỗi: Chưa có API Key.")
     st.stop()
 
-# --- HÀM GỌI API GEMINI (ĐÃ TỐI ƯU JSON VÀ FIX LỖI 429) ---
-# --- ĐỊNH NGHĨA QUAN TRỌNG: Cần có tham số audio_data ---
-def call_gemini(prompt, expect_json=False, audio_data=None):
+def call_gemini(prompt, expect_json=False, audio_data=None, image_data=None):
+    """
+    Hàm gọi Gemini API hỗ trợ:
+    - Text Prompt
+    - Audio (Speaking)
+    - Image (Writing Task 1)
+    """
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={API_KEY}"
     headers = {'Content-Type': 'application/json'}
     
-    # Nếu cần JSON, thêm chỉ dẫn rõ ràng vào prompt
     final_prompt = prompt
     if expect_json:
         final_prompt += "\n\nIMPORTANT: Output STRICTLY JSON without Markdown formatting (no ```json or ```)."
     
-    # Cấu trúc message parts
+    # Tạo nội dung text
     parts = [{"text": final_prompt}]
+    
+    # Nếu có Audio (Speaking)
     if audio_data:
         parts.append({"inline_data": {"mime_type": "audio/wav", "data": audio_data}})
+        
+    # Nếu có Image (Writing Task 1) - Input là Base64 string của ảnh
+    if image_data:
+        parts.append({"inline_data": {"mime_type": "image/png", "data": image_data}})
 
     data = {"contents": [{"parts": parts}]}
     
-    # Cơ chế Retry khi gặp lỗi 429
-    for attempt in range(4): # Thử lại tối đa 4 lần
+    for attempt in range(4): 
         try:
             resp = requests.post(url, headers=headers, data=json.dumps(data))
             if resp.status_code == 200:
                 text = resp.json()['candidates'][0]['content']['parts'][0]['text']
-                if expect_json:
-                    # Làm sạch chuỗi nếu AI lỡ thêm markdown
+                if expect_json: 
                     text = re.sub(r"```json|```", "", text).strip()
                 return text
-            elif resp.status_code == 429: # Resource Exhausted
-                time.sleep(2 ** attempt) # Đợi 1s, 2s, 4s...
+            elif resp.status_code == 429: 
+                time.sleep(2 ** attempt)
                 continue
-            else:
+            else: 
+                print(f"Error {resp.status_code}: {resp.text}")
                 return None
-        except:
+        except Exception as e:
+            print(f"Exception: {e}")
             time.sleep(1)
             continue
             
+    return None
+
+# --- HÀM HỖ TRỢ LẤY ẢNH TỪ URL THÀNH BASE64 ---
+def get_image_base64_from_url(url):
+    try:
+        response = requests.get(url)
+        if response.status_code == 200:
+            return base64.b64encode(response.content).decode('utf-8')
+    except:
+        return None
     return None
 
 # --- QUẢN LÝ SESSION STATE ---
@@ -871,13 +910,24 @@ else:
         elif lesson_w in WRITING_CONTENT:
             data_w = WRITING_CONTENT[lesson_w]
             st.info(f"### TOPIC: {data_w['question']}")
-            
+
+        task_type = data_w.get("type", "Task 2")
+        image_b64 = None
+
+        if task_type == "Task 1" and "image_url" in data_w:
+            st.write("**📊 Chart/Diagram:**")
+            st.image(data_w["image_url"], caption="Graphic:", use_container_width=True)
+                
+            with st.spinner("Đang tải dữ liệu biểu đồ..."):
+                image_b64 = get_image_base64_from_url(data_w["image_url"])
+                if not image_b64:
+                    st.error("⚠️ Không tải được ảnh biểu đồ. Bị lỗi này nhắn cho thầy.")    
 # --- PHẦN 1: CHECKLIST & OUTLINE ---
             
             # --- PHẦN 1: CHECKLIST & OUTLINE ---
             
             # Cập nhật nội dung Expander bằng Markdown thuần (Full nội dung, ít icon)
-            with st.expander("📚 **CÁC LỖI TƯ DUY & CẤU TRÚC LOGIC (Đọc kỹ trước khi viết)**", expanded=False):
+            with st.expander("**CÁC LỖI TƯ DUY & CẤU TRÚC LOGIC (Đọc kỹ trước khi viết)**", expanded=False):
                 st.markdown("""
                 ### 1. CÁC LỖI TƯ DUY LOGIC CẦN TRÁNH 
                 Đây là các lỗi lập luận phổ biến do ảnh hưởng của tư duy dịch từ tiếng Việt hoặc văn hóa giao tiếp hàng ngày, cần loại bỏ trong văn viết học thuật:
@@ -943,7 +993,7 @@ else:
                         # Prompt giữ nguyên sự nghiêm khắc để khớp với checklist
                         prompt = f"""
                         ## ROLE:
-                        You are a strict, high-level IELTS Writing Examiner and Logic Instructor. Your goal is to critique student outlines with a focus on **Critical Thinking** and **Academic Rigor**.
+                        You are an encouraging, high-level IELTS Writing Examiner and Logic Instructor. Your goal is to critique student outlines with a focus on **Critical Thinking** and **Academic Rigor**.
 
                         ## INPUT DATA:
                         - **Topic:** {data_w['question']}
@@ -1050,33 +1100,41 @@ else:
                             ## 🛡️ GRADING RUBRIC (STRICT DIFFERENTIATORS):
                             You must evaluate based on these specific distinctions between bands:
 
-                            **1. Task Response (TR):**
-                            - **Band 4:** Response is irrelevant or minimal; main ideas are difficult to identify or repetitive.
-                            - **Band 5:** Addresses the task but usually only partially; ideas are limited/undeveloped; no clear conclusions.
-                            - **Band 6:** Addresses all parts; main ideas are relevant but may be insufficiently developed or unclear.
-                            - **Band 7:** Addresses all parts; presents a clear position throughout; extends and supports main ideas.
-                            - **Band 8+:** Sufficiently addresses all parts; well-developed response with relevant, extended, and supported ideas.
+    * **BAND 9 (Expert):**
+        * **Task Response:** Quan điểm sâu sắc, lập luận thuyết phục hoàn toàn.
+        * **Coherence & Cohesion:** Dẫn dắt người đọc tự nhiên, kết nối ý tưởng không tì vết.
+        * **Lexical Resource:** Ngôn ngữ tinh tế, chính xác, phong cách học thuật cao cấp.
+        * **Grammar:** Kiểm soát ngữ pháp hoàn hảo.
 
-                            **2. Coherence & Cohesion (CC):**
-                            - **Band 4:** No clear progression; basic or repetitive cohesive devices.
-                            - **Band 5:** Some organization but lacks overall progression; cohesive devices are inadequate, inaccurate, or overused.
-                            - **Band 6:** Arranges information coherently; uses cohesive devices effectively but they may sound **mechanical/faulty**.
-                            - **Band 7:** Logically organizes information; uses a range of cohesive devices appropriately (**natural flow**).
-                            - **Band 8+:** Sequences information and ideas logically; manages all aspects of cohesion well.
+    * **BAND 8 (Very Good):**
+        * **Task Response:** Quan điểm rõ ràng, hệ thống ý tưởng được phát triển và mở rộng tốt.
+        * **Coherence & Cohesion:** Chia đoạn hợp lý, mạch lạc, quản lý đoạn văn tốt.
+        * **Lexical Resource:** Dùng từ vựng chính xác, trôi chảy, hiếm khi mắc lỗi.
+        * **Grammar:** Đa dạng cấu trúc, phần lớn các câu đều chính xác.
 
-                            **3. Lexical Resource (LR):**
-                            - **Band 4:** Basic vocabulary; used repetitively; inappropriate choices.
-                            - **Band 5:** Limited range; minimally adequate for the task; noticeable errors in spelling/formation that **may cause difficulty for the reader**.
-                            - **Band 6:** Adequate range; attempts less common items but with some inaccuracy; errors do not impede communication.
-                            - **Band 7:** Sufficient range to allow flexibility; uses **less common lexical items** with awareness of style/collocation.
-                            - **Band 8+:** Wide range; fluent and flexible; skilful use of uncommon items.
+    * **BAND 7 (Good):**
+        * **Task Response:** Quan điểm xuyên suốt. Ý chính được giải thích và hỗ trợ (nhưng có thể hơi chung chung ở một số chỗ).
+        * **Coherence & Cohesion:** Sử dụng đa dạng từ nối, mỗi đoạn có chủ đề rõ ràng (Topic Sentence).
+        * **Lexical Resource:** Dùng được Collocations (cụm từ cố định) và từ vựng học thuật, có ý thức về văn phong.
+        * **Grammar:** Có nhiều câu phức không lỗi. Kiểm soát ngữ pháp và dấu câu tốt.
 
-                            **4. Grammatical Range & Accuracy (GRA) - *CRITICAL*:**
-                            - **Band 4:** Very limited range of structures; rare use of subordinate clauses; errors are frequent and cause strain.
-                            - **Band 5:** Attempts complex sentences but these tend to be faulty; grammatical errors are frequent and **may cause some difficulty for the reader**.
-                            - **Band 6:** Mix of simple and complex forms; errors occur but **rarely impede communication**.
-                            - **Band 7:** Uses a variety of complex structures; produces **frequent error-free sentences**.
-                            - **Band 8+:** Wide range of structures; the majority of sentences are error-free.
+    * **BAND 6 (Competent):**
+        * **Task Response:** Trả lời đủ các phần, quan điểm rõ ràng nhưng giải thích chưa sâu hoặc lặp ý.
+        * **Coherence & Cohesion:** Có chia đoạn nhưng kết nối chưa mượt (mechanical).
+        * **Lexical Resource:** Đủ từ vựng để diễn đạt nhưng mắc lỗi dùng từ hoặc chính tả.
+        * **Grammar:** Có lỗi ngữ pháp nhưng không gây hiểu lầm nghiêm trọng.
+
+    * **BAND 5 (Modest):**
+        * **Task Response:** Quan điểm không rõ ràng hoặc không nhất quán. Ý tưởng rời rạc.
+        * **Coherence & Cohesion:** Không chia đoạn hoặc chia đoạn sai logic.
+        * **Lexical Resource:** Vốn từ nghèo nàn, lặp từ nhiều.
+        * **Grammar:** Lỗi ngữ pháp gây khó hiểu cho người đọc.
+
+    * **BAND 4 (Limited):**
+        * **Task Response:** Lạc đề hoặc chỉ trả lời một phần rất nhỏ.
+        * **Coherence & Cohesion:** Ý tưởng không liên kết.
+        * **Lexical Resource:** Chỉ dùng từ vựng rất cơ bản.
+        * **Grammar:** Sai cấu trúc câu căn bản.
 
                             ## 📝 OUTPUT REQUIREMENTS:
                             1.  **SCORING:** Component scores (TR, CC, LR, GRA) must be INTEGERS (e.g., 4, 5, 6). Overall can be .5.
@@ -1085,7 +1143,7 @@ else:
                             {{
                                 "TR": [int], "CC": [int], "LR": [int], "GRA": [int],
                                 "Overall": [float],
-                                "Feedback": "### 🎯 KẾT QUẢ: Band [Overall]\\n\\n### 📊 CHI TIẾT ĐIỂM SỐ:\\n- **Task Response ([TR]):** [Brief explanation why based on rubric]\\n- **Coherence ([CC]):** [Brief explanation]\\n- **Lexical ([LR]):** [Brief explanation]\\n- **Grammar ([GRA]):** [Brief explanation]\\n\\n### 🛠️ SỬA LỖI CHI TIẾT (QUAN TRỌNG):\\n\\n**1. Cải thiện Từ vựng & Ngữ pháp:**\\n* ❌ **Lỗi:** [Quote exact mistake]\\n* ✅ **Sửa:** [Rewrite accurately]\\n* 💡 **Giải thích:** [Explain the error type]\\n\\n**2. Cải thiện Mạch lạc & Logic:**\\n* ❌ **Vấn đề:** [Point out logic gap or mechanical linking]\\n* 💡 **Gợi ý:** [Suggestion for better flow]\\n\\n### 💬 LỜI KHUYÊN CỦA GIÁM KHẢO:\\n[Constructive advice for next steps]"
+                                "Feedback": "### KẾT QUẢ: Band [Overall]\\n\\n### 📊 CHI TIẾT ĐIỂM SỐ:\\n- **Task Response ([TR]):** [Brief explanation why based on rubric]\\n- **Coherence ([CC]):** [Brief explanation]\\n- **Lexical ([LR]):** [Brief explanation]\\n- **Grammar ([GRA]):** [Brief explanation]\\n\\n### 🛠️ SỬA LỖI CHI TIẾT (QUAN TRỌNG):\\n\\n**1. Cải thiện Từ vựng & Ngữ pháp:**\\n* ❌ **Lỗi:** [Quote exact mistake]\\n* ✅ **Sửa:** [Rewrite accurately]\\n* 💡 **Giải thích:** [Explain the error type]\\n\\n**2. Cải thiện Mạch lạc & Logic:**\\n* ❌ **Vấn đề:** [Point out logic gap or mechanical linking]\\n* 💡 **Gợi ý:** [Suggestion for better flow]\\n\\n### 💬 LỜI KHUYÊN CỦA GIÁM KHẢO:\\n[Constructive advice for next steps]"
                             }}
                             """
                             res = call_gemini(prompt, expect_json=True)
@@ -1187,25 +1245,25 @@ else:
                                 * **Vocab:** Dùng điêu luyện Idioms/từ hiếm.
                                 * **Pronunciation:** Dễ hiểu xuyên suốt. Ngữ điệu tốt. Transcript chính xác 99%.
 
-                                * **BAND 7 (Tốt - Target):**
+                                * **BAND 7 (Tốt):**
                                 * **Fluency:** Nói dài dễ dàng. Từ nối linh hoạt.
                                 * **Vocab:** Dùng được Collocation tự nhiên.
                                 * **Grammar:** Thường xuyên có câu phức không lỗi.
-                                * **Pronunciation:** Dễ hiểu. *(Lưu ý: Chấp nhận một vài lỗi nhỏ, nhưng nếu Transcript xuất hiện từ lạ/sai ngữ cảnh, hãy trừ điểm nhẹ).*
+                                * **Pronunciation:** Dễ hiểu. *(Lưu ý: Chấp nhận một vài lỗi nhỏ, nhưng nếu Transcript xuất hiện từ lạ/sai ngữ cảnh, hãy trừ điểm).*
 
                                 * **BAND 6 (Khá):**
-                                * **Fluency:** Đôi khi mất mạch, từ nối máy móc.
+                                * **Fluency:** Khá trôi chảy, nhưng đôi khi mất mạch lạc, từ nối máy móc.
                                 * **Vocab:** Đủ để bàn luận, biết Paraphrase.
                                 * **Grammar:** Có dùng câu phức nhưng thường xuyên sai.
-                                * **Pronunciation:** Rõ ràng phần lớn thời gian. *(Lưu ý: Nếu thấy từ vựng bị biến đổi thành từ khác nghe na ná - Sound-alike words - hoặc 1-2 đoạn vô nghĩa, hãy đánh dấu là Lỗi Phát Âm).*
+                                * **Pronunciation:** Rõ ràng phần lớn thời gian. *(Lưu ý: Nếu thấy từ vựng bị biến đổi thành từ khác nghe na ná - Sound-alike words - hoặc 1-2 đoạn vô nghĩa, hãy đánh dấu là Lỗi Phát Âm và trừ điểm).*
 
                                 * **BAND 5 (Trung bình):**
                                 * **Fluency:** Ngắt quãng nhiều, lặp từ.
-                                * **Grammar:** Chỉ đúng khi dùng câu đơn.
-                                * **Pronunciation:** *(Dấu hiệu nhận biết: Transcript thường xuyên xuất hiện các từ vô nghĩa hoặc sai hoàn toàn ngữ cảnh do máy không nhận diện được âm).*
+                                * **Grammar:** Hầu như chỉ dùng câu đơn.
+                                * **Pronunciation:** Có nhiều từ vô nghĩa, không hợp ngữ cảnh *(Dấu hiệu nhận biết: Transcript thường xuyên xuất hiện các từ vô nghĩa hoặc sai hoàn toàn ngữ cảnh do máy không nhận diện được âm, và trừ điểm).*
 
                                 * **BAND 4 (Hạn chế):**
-                                * **Fluency:** Câu cụt, ngắt quãng dài.
+                                * **Fluency:** Câu cụt, ngắt quãng dài, nói còn dang dở.
                                 * **Pronunciation:** Khó hiểu. Transcript gãy vụn, chứa nhiều từ không liên quan đến chủ đề.
 
                                 ## OUTPUT FORMAT (Vietnamese Markdown):
@@ -1266,10 +1324,10 @@ else:
                     audio_bytes_fc = audio_fc.read()
                     if len(audio_bytes_fc) < 1000: st.warning("File quá ngắn.")
                     else:
-                        with st.spinner("AI đang chấm điểm Part 1..."):
+                        with st.spinner("Đang chấm điểm"):
                             audio_b64_fc = base64.b64encode(audio_bytes_fc).decode('utf-8')
                                 
-                            prompt_full= f"""Role: Examiner. Assess IELTS Speaking Part 1 about "{q_p1}". Transcript EXACTLY what user said (no auto-correct). Give Band Score & Feedback.
+                            prompt_full= f"""Role: Examiner. Assess IELTS Speaking Part 1 about "{q_p1}". Transcript EXACTLY what user said (no auto-correct). Give Band Score & Feedback, encouraging tone.
                                 ## GRADING RUBRIC (TIÊU CHÍ PHÂN LOẠI CỐT LÕI):
 
                                 * **BAND 9 (Native-like):**
@@ -1282,7 +1340,7 @@ else:
                                 * **Vocab:** Dùng điêu luyện Idioms/từ hiếm.
                                 * **Pronunciation:** Dễ hiểu xuyên suốt. Ngữ điệu tốt. Transcript chính xác 99%.
 
-                                * **BAND 7 (Tốt - Target):**
+                                * **BAND 7 (Tốt):**
                                 * **Fluency:** Nói dài dễ dàng. Từ nối linh hoạt.
                                 * **Vocab:** Dùng được Collocation tự nhiên.
                                 * **Grammar:** Thường xuyên có câu phức không lỗi.
@@ -1354,11 +1412,11 @@ else:
                     audio_bytes_p2 = audio_fc_p2.read()
                     if len(audio_bytes_p2) < 1000: st.warning("File quá ngắn.")
                     else:
-                        with st.spinner("AI đang chấm điểm Part 2..."):
+                        with st.spinner("Đang chấm điểm"):
                             audio_b64_p2 = base64.b64encode(audio_bytes_p2).decode('utf-8')
                             
                             # PROMPT FULL COPY
-                            prompt_full_p2 = f"""Role: Examiner. Assess IELTS Speaking response for Part 2 "{data_p2['cue_card']}". Transcript EXACTLY what user said (no auto-correct). Give Band Score & Feedback.
+                            prompt_full_p2 = f"""Role: Examiner. Assess IELTS Speaking response for Part 2 "{data_p2['cue_card']}". Transcript EXACTLY what user said (no auto-correct). Give Band Score & Feedback, encouraging tone.
                                 ## GRADING RUBRIC (TIÊU CHÍ PHÂN LOẠI CỐT LÕI):
 
                                 * **BAND 9 (Native-like):**
@@ -1371,7 +1429,7 @@ else:
                                 * **Vocab:** Dùng điêu luyện Idioms/từ hiếm.
                                 * **Pronunciation:** Dễ hiểu xuyên suốt. Ngữ điệu tốt. Transcript chính xác 99%.
 
-                                * **BAND 7 (Tốt - Target):**
+                                * **BAND 7 (Tốt):**
                                 * **Fluency:** Nói dài dễ dàng. Từ nối linh hoạt.
                                 * **Vocab:** Dùng được Collocation tự nhiên.
                                 * **Grammar:** Thường xuyên có câu phức không lỗi.
@@ -1435,11 +1493,11 @@ else:
                     audio_bytes_p3 = audio_fc_p3.read()
                     if len(audio_bytes_p3) < 1000: st.warning("File quá ngắn.")
                     else:
-                        with st.spinner("AI đang chấm điểm Part 3..."):
+                        with st.spinner("Đang chấm điểm"):
                             audio_b64_p3 = base64.b64encode(audio_bytes_p3).decode('utf-8')
                             
                             # PROMPT FULL COPY
-                            prompt_full_p3 = f"""Role: Examiner. Assess IELTS Speaking response for Part 3 "{data_p3['part3']}". Transcript EXACTLY what user said (no auto-correct). Give Band Score & Feedback.
+                            prompt_full_p3 = f"""Role: Examiner. Assess IELTS Speaking response for Part 3 "{data_p3['part3']}". Transcript EXACTLY what user said (no auto-correct). Give Band Score & Feedback, encouraging tone.
                                 ## GRADING RUBRIC (TIÊU CHÍ PHÂN LOẠI CỐT LÕI):
 
                                 * **BAND 9 (Native-like):**
@@ -1452,7 +1510,7 @@ else:
                                 * **Vocab:** Dùng điêu luyện Idioms/từ hiếm.
                                 * **Pronunciation:** Dễ hiểu xuyên suốt. Ngữ điệu tốt. Transcript chính xác 99%.
 
-                                * **BAND 7 (Tốt - Target):**
+                                * **BAND 7 (Tốt):**
                                 * **Fluency:** Nói dài dễ dàng. Từ nối linh hoạt.
                                 * **Vocab:** Dùng được Collocation tự nhiên.
                                 * **Grammar:** Thường xuyên có câu phức không lỗi.
