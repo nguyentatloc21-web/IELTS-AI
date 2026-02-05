@@ -901,7 +901,7 @@ else:
 
     # --- MODULE 5: WRITING ---
     elif menu == "✍️ Writing":
-        st.title("✍️ Luyện Tập Writing (Task 2)")
+        st.title("✍️ Luyện Tập Writing")
         
         lesson_w = st.selectbox("Chọn bài viết:", current_writing_menu)
         
@@ -909,26 +909,135 @@ else:
             st.info("Bài này chưa được giao.")
         elif lesson_w in WRITING_CONTENT:
             data_w = WRITING_CONTENT[lesson_w]
-            st.info(f"### TOPIC: {data_w['question']}")
+            task_type = data_w.get("type", "Task 2")
+            
+            st.info(f"### TOPIC ({task_type}):\n{data_w['question']}")
 
-        task_type = data_w.get("type", "Task 2")
-        image_b64 = None
+            image_b64 = None
+            if task_type == "Task 1" and "image_url" in data_w:
+                st.write("**📊 Chart/Diagram:**")
+                st.image(data_w["image_url"], caption="Graphic:", use_container_width=True)
+                # Tải ảnh ngầm để chấm
+                with st.spinner("Đang tải dữ liệu biểu đồ..."):
+                    image_b64 = get_image_base64_from_url(data_w["image_url"])
 
-        if task_type == "Task 1" and "image_url" in data_w:
-            st.write("**📊 Chart/Diagram:**")
-            st.image(data_w["image_url"], caption="Graphic:", use_container_width=True)
+            # === PHÂN LUỒNG TASK 1 VS TASK 2 ===
+            
+            # --- LUỒNG TASK 1: TRỰC TIẾP LÀM BÀI ---
+            if task_type == "Task 1":
+                # Chọn chế độ
+                mode_w = st.radio("Chọn chế độ:", ["-- Chọn chế độ --", "Luyện Tập (Không giới hạn)", "Thi Thử (20 Phút)"], horizontal=True, key="w_task1_mode")
                 
-            with st.spinner("Đang tải dữ liệu biểu đồ..."):
-                image_b64 = get_image_base64_from_url(data_w["image_url"])
-                if not image_b64:
-                    st.error("⚠️ Không tải được ảnh biểu đồ. Bị lỗi này nhắn cho thầy.")    
-# --- PHẦN 1: CHECKLIST & OUTLINE ---
-            
-            # --- PHẦN 1: CHECKLIST & OUTLINE ---
-            
+                if mode_w != "-- Chọn chế độ --":
+                    # Hiển thị đồng hồ nếu Thi Thử
+                    if "Thi Thử" in mode_w:
+                        timer_html = f"""
+                        <div style="font-size: 24px; font-weight: bold; color: #d35400; font-family: 'Segoe UI', sans-serif; margin-bottom: 10px;">
+                            ⏳ Thời gian Task 1: <span id="timer_w1">20:00</span>
+                        </div>
+                        <script>
+                        var time = 20 * 60;
+                        setInterval(function() {{
+                            var m = Math.floor(time / 60);
+                            var s = time % 60;
+                            document.getElementById("timer_w1").innerHTML = m + ":" + (s < 10 ? "0" : "") + s;
+                            time--;
+                        }}, 1000);
+                        </script>
+                        """
+                        components.html(timer_html, height=50)
+
+                    essay_t1 = st.text_area("Bài làm Task 1 (Min 150 words):", height=300, key="essay_t1")
+                    
+                    if st.button("Nộp Bài Task 1"):
+                        if len(essay_t1.split()) < 30: st.warning("Bài viết quá ngắn.")
+                        else:
+                            with st.spinner("Đang chấm Task 1 (Task Achievement)..."):
+                                prompt_t1 = f"""
+                                ## ROLE: Senior IELTS Writing Examiner.
+                                ## TASK: Assess IELTS Writing Task 1 Essay.
+                                ## INPUT:
+                                - Question: {data_w['question']}
+                                - Essay: {essay_t1}
+
+                                ## 🛡️ RUBRIC (TASK 1 - STRICT):
+                                * **BAND 9 (Expert):**
+                                    * **Task Achievement:** Đáp ứng trọn vẹn yêu cầu, Overview sắc sảo, dữ liệu chọn lọc tinh tế.
+                                    * **Coherence & Cohesion:** Mạch lạc hoàn hảo, tính liên kết không tì vết.
+                                    * **Lexical Resource:** Từ vựng tự nhiên như người bản xứ, chính xác tuyệt đối.
+                                    * **Grammar:** Cấu trúc đa dạng, hoàn toàn chính xác.
+
+                                * **BAND 8 (Very Good):**
+                                    * **Task Achievement:** Overview rõ ràng, làm nổi bật đặc điểm chính. Số liệu dẫn chứng đầy đủ, logic.
+                                    * **Coherence & Cohesion:** Sắp xếp logic, chia đoạn hợp lý.
+                                    * **Lexical Resource:** Vốn từ rộng, chính xác, rất ít lỗi.
+                                    * **Grammar:** Đa số câu không lỗi, dùng linh hoạt câu phức.
+
+                                * **BAND 7 (Good):**
+                                    * **Task Achievement:** Overview rõ ràng. Xu hướng chính được trình bày nhưng có thể chưa phát triển đầy đủ.
+                                    * **Coherence & Cohesion:** Có tổ chức logic, dùng từ nối tốt dù đôi khi máy móc.
+                                    * **Lexical Resource:** Dùng tốt từ vựng chủ đề/Collocations, sai sót nhỏ.
+                                    * **Grammar:** Thường xuyên viết được câu phức không lỗi.
+
+                                * **BAND 6 (Competent):**
+                                    * **Task Achievement:** Có Overview nhưng thông tin chưa chọn lọc kỹ. Chi tiết đôi khi không liên quan.
+                                    * **Coherence & Cohesion:** Có liên kết nhưng máy móc hoặc lỗi kết nối.
+                                    * **Lexical Resource:** Đủ dùng, cố dùng từ khó nhưng hay sai ngữ cảnh.
+                                    * **Grammar:** Kết hợp đơn/phức, lỗi ngữ pháp xuất hiện thường xuyên.
+
+                                * **BAND 5 (Modest):**
+                                    * **Task Achievement:** Kể lể chi tiết máy móc, KHÔNG CÓ Overview rõ ràng. Số liệu có thể sai.
+                                    * **Coherence & Cohesion:** Thiếu mạch lạc, lạm dụng/thiếu từ nối.
+                                    * **Lexical Resource:** Hạn chế, sai chính tả gây khó hiểu.
+                                    * **Grammar:** Chỉ dùng được câu đơn, cố dùng câu phức là sai.
+
+                                * **BAND 4 (Limited):**
+                                    * **Task Achievement:** Lạc đề hoặc bỏ sót thông tin quan trọng.
+                                    * **Coherence & Cohesion:** Lộn xộn, không chia đoạn.
+                                    * **Lexical Resource:** Lặp từ, từ cơ bản.
+                                    * **Grammar:** Lỗi sai dày đặc.
+
+                                ## OUTPUT: JSON STRICTLY.
+                                {{
+                                    "TA": [int], "CC": [int], "LR": [int], "GRA": [int],
+                                    "Overall": [float],
+                                    "Feedback": "Markdown text detail..."
+                                }}
+                                """
+                                res = call_gemini(prompt_t1, expect_json=True, image_data=image_b64)
+                                if res:
+                                    try:
+                                        grade = json.loads(res)
+                                        # Save result to session to display
+                                        st.session_state['writing_result_t1'] = grade
+                                        
+                                        # Map TA -> TR for storage consistency if needed, or just store as is
+                                        crit = json.dumps({"TA": grade['TA'], "CC": grade['CC'], "LR": grade['LR'], "GRA": grade['GRA']})
+                                        save_writing_log(user['name'], user['class'], lesson_w, "Task 1", grade['Overall'], crit, grade['Feedback'], mode=mode_w)
+                                        st.rerun()
+                                    except: st.error("Lỗi chấm bài.")
+
+                # Hiện kết quả Task 1
+                if 'writing_result_t1' in st.session_state:
+                    res = st.session_state['writing_result_t1']
+                    st.balloons()
+                    st.success(f"OVERALL BAND: {res['Overall']}")
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Task Achievement", res['TA'])
+                    c2.metric("Coherence", res['CC'])
+                    c3.metric("Lexical", res['LR'])
+                    c4.metric("Grammar", res['GRA'])
+                    with st.container(border=True):
+                        st.markdown(res['Feedback'])
+                    if st.button("Làm lại Task 1"):
+                        del st.session_state['writing_result_t1']
+                        st.rerun()
+
+            # --- LUỒNG TASK 2: 2 BƯỚC (OUTLINE -> WRITE) ---
+            else:            
             # Cập nhật nội dung Expander bằng Markdown thuần (Full nội dung, ít icon)
-            with st.expander("**CÁC LỖI TƯ DUY & CẤU TRÚC LOGIC (Đọc kỹ trước khi viết)**", expanded=False):
-                st.markdown("""
+                with st.expander("**CÁC LỖI TƯ DUY & CẤU TRÚC LOGIC (Đọc kỹ trước khi viết)**", expanded=False):
+                    st.markdown("""
                 ### 1. CÁC LỖI TƯ DUY LOGIC CẦN TRÁNH 
                 Đây là các lỗi lập luận phổ biến do ảnh hưởng của tư duy dịch từ tiếng Việt hoặc văn hóa giao tiếp hàng ngày, cần loại bỏ trong văn viết học thuật:
 
@@ -1032,7 +1141,7 @@ else:
                             -   **Tại sao sai:** [Explain specifically]
                             -   **Cách sửa:** [Suggest academic fix]
 
-                            ### 3. GỢI Ý NÂNG CẤP
+                            ### 3. GỢI Ý NÂNG CẤP & TỪ VỰNG
                             (Vocab or flow adjustments. Suggest 5-10 academic collocations based on ideas from outline).
                         """
                         
@@ -1050,43 +1159,37 @@ else:
                 st.markdown("### KẾT QUẢ PHÂN TÍCH DÀN Ý")
                 with st.container(border=True):
                     st.markdown(st.session_state['writing_feedback_data'])
+                st.divider()
 
-            # --- PHẦN 2: VIẾT BÀI (LUÔN HIỂN THỊ) ---
-    # Chọn chế độ làm bài
-            mode_w = st.radio("Chọn chế độ:", ["-- Chọn chế độ --", "Luyện Tập (Không giới hạn)", "Thi Thử (40 Phút)"], horizontal=True, key="w_mode_select")
-            
-            if mode_w != "-- Chọn chế độ --":
-                # Hiển thị khu vực viết bài
-                
+            # --- STEP 2: VIẾT BÀI ---
+                st.subheader("STEP 2: VIẾT BÀI HOÀN CHỈNH")
+                mode_w = st.radio("Chọn chế độ:", ["-- Chọn chế độ --", "Luyện Tập (Không giới hạn)", "Thi Thử (40 Phút)"], horizontal=True, key="w_task2_mode")
 
-                # Đồng hồ (Chỉ hiện khi chọn Thi Thử)
-                if "Thi Thử" in mode_w:
-                     timer_html = f"""
-                    <div style="font-size: 24px; font-weight: bold; color: #d35400; font-family: 'Segoe UI', sans-serif; margin-bottom: 10px;">
-                        ⏳ Thời gian: <span id="timer_w">40:00</span>
-                    </div>
-                    <script>
-                    var time = {data_w['time']} * 60;
-                    setInterval(function() {{
-                        var m = Math.floor(time / 60);
-                        var s = time % 60;
-                        document.getElementById("timer_w").innerHTML = m + ":" + (s < 10 ? "0" : "") + s;
-                        time--;
-                    }}, 1000);
-                    </script>
-                    """
-                     components.html(timer_html, height=50)
-                else:
-                     st.success("Chế độ Luyện Tập")
+                if mode_w != "-- Chọn chế độ --":
+                    if "Thi Thử" in mode_w:
+                        timer_html = f"""
+                        <div style="font-size: 24px; font-weight: bold; color: #d35400; font-family: 'Segoe UI', sans-serif; margin-bottom: 10px;">
+                            ⏳ Thời gian Task 2: <span id="timer_w2">40:00</span>
+                        </div>
+                        <script>
+                        var time = 40 * 60;
+                        setInterval(function() {{
+                            var m = Math.floor(time / 60);
+                            var s = time % 60;
+                            document.getElementById("timer_w2").innerHTML = m + ":" + (s < 10 ? "0" : "") + s;
+                            time--;
+                        }}, 1000);
+                        </script>
+                        """
+                        components.html(timer_html, height=50)
 
-                essay = st.text_area("Bài làm (Min 250 words):", height=400, key="essay_input")
-                
-                if st.button("Nộp Bài Chấm Điểm"):
-                    if len(essay.split()) < 50: st.warning("Bài viết quá ngắn.")
-                    else:
-                        with st.spinner("Đang chấm điểm theo Band Descriptors (4-9)..."):
-                            # PROMPT CHẤM BÀI
-                            prompt = f"""
+                    essay = st.text_area("Bài làm Task 2 (Min 250 words):", height=400, key="essay_t2")
+                    
+                    if st.button("Nộp Bài Task 2"):
+                        if len(essay.split()) < 50: st.warning("Bài viết quá ngắn.")
+                        else:
+                            with st.spinner("Đang chấm điểm Task 2 (Task Response)..."):
+                                prompt_t2 = f"""
                             ## ROLE:
                             You are a strict, Senior IELTS Writing Examiner (IDP/BC certified).
                         
