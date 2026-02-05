@@ -583,7 +583,7 @@ Do you agree or disagree?"""
     "Lesson 6: Easternburg Map (Task 1)": {
         "type": "Task 1",
         "time": 20,
-        "image_url": "https://drive.google.com/uc?export=view&id=1du4nIQMhHe5uoqyiy9-MNItYpQTaKUht",
+        "image_url": "https://drive.google.com/uc?export=view&id=1MqxQbcUxFPUWNmdcpqv5u6GVBse3Jxgg",
         "question": """### 📝 IELTS Writing Task 1
 **The diagrams below show the town of Easternburg in 1995 and the present day.**
 Summarise the information by selecting and reporting the main features, and make comparisons where relevant."""
