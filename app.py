@@ -557,6 +557,7 @@ From early days it had been obvious that English and European sheep breeds had t
     
 # WRITING CONTENT (Chỉ lớp ELITE)
 # WRITING CONTENT
+# WRITING CONTENT
 WRITING_CONTENT = {
     "Lesson 3: Education & Society": {
         "type": "Task 2",
@@ -568,7 +569,7 @@ Discuss both these views and give your own opinion."""
     "Lesson 4: Salt Intake (Task 1)": {
         "type": "Task 1",
         "time": 20,
-        "image_url": "https://drive.google.com/uc?export=view&id=1du4nIQMhHe5uoqyiy9-MNItYpQTaKUht",
+        "image_url": "https://drive.google.com/thumbnail?id=1du4nIQMhHe5uoqyiy9-MNItYpQTaKUht&sz=w1000",
         "question": """### 📝 IELTS Writing Task 1
 **The chart shows information about salt intake in the US in 2000.**
 Summarise the information by selecting and reporting the main features, and make comparisons where relevant."""
@@ -583,12 +584,13 @@ Do you agree or disagree?"""
     "Lesson 6: Easternburg Map (Task 1)": {
         "type": "Task 1",
         "time": 20,
-        "image_url": "https://drive.google.com/uc?export=view&id=1MqxQbcUxFPUWNmdcpqv5u6GVBse3Jxgg",
+        "image_url": "https://drive.google.com/thumbnail?id=1MqxQbcUxFPUWNmdcpqv5u6GVBse3Jxgg&sz=w1000",
         "question": """### 📝 IELTS Writing Task 1
 **The diagrams below show the town of Easternburg in 1995 and the present day.**
 Summarise the information by selecting and reporting the main features, and make comparisons where relevant."""
     }
 }
+
 # --- HÀM TẠO MENU TỰ ĐỘNG (Auto-generate Menu with "Sắp ra mắt" status) ---
 def create_default_menu(content_dict, total_lessons=10):
     menu = []
@@ -795,10 +797,13 @@ def call_gemini(prompt, expect_json=False, audio_data=None, image_data=None):
 # --- HÀM HỖ TRỢ LẤY ẢNH TỪ URL THÀNH BASE64 ---
 def get_image_base64_from_url(url):
     try:
-        response = requests.get(url)
+        # Thêm User-Agent giả lập trình duyệt để tránh bị chặn bởi Google Drive
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
             return base64.b64encode(response.content).decode('utf-8')
-    except:
+    except Exception as e:
+        print(f"Lỗi tải ảnh: {e}")
         return None
     return None
 
