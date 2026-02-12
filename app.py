@@ -27,6 +27,15 @@ def normalize_name(name):
     # Tách các từ, bỏ khoảng trắng thừa, viết hoa chữ đầu, rồi ghép lại
     return " ".join(name.strip().split()).title()
 
+def extract_score(value):
+    """
+    Hàm an toàn để trích xuất điểm số.
+    Xử lý trường hợp AI trả về list [7] hoặc [7.5] thay vì số 7 hoặc 7.5
+    """
+    if isinstance(value, list):
+        return value[0] if len(value) > 0 else 0
+    return value
+
 # ================= 1. KẾT NỐI GOOGLE SHEETS (DATABASE) =================
 def connect_gsheet():
     """Kết nối Google Sheets an toàn"""
@@ -97,17 +106,17 @@ def save_reading_log(student, class_code, lesson, score, total, mode="Practice")
             st.toast("✅ Đã lưu kết quả Reading!", icon="💾")
     except: pass
 
-def save_writing_log(student, class_code, lesson, topic, band_score, criteria_scores, feedback):
-    """Lưu điểm Writing"""
+def save_writing_log(student, class_code, lesson, topic, essay, band_score, criteria_scores, feedback, mode="Practice"):
+    """Lưu điểm Writing (Bổ sung lưu cả bài viết Essay)"""
     try:
         sheet = connect_gsheet()
         if sheet:
             try: ws = sheet.worksheet("Writing_Logs")
             except:
-                ws = sheet.add_worksheet(title="Writing_Logs", rows="1000", cols="10")
-                ws.append_row(["Timestamp", "Student", "Class", "Lesson", "Topic", "Overall_Band", "TR_CC_LR_GRA", "Feedback"])
+                ws = sheet.add_worksheet(title="Writing_Logs", rows="1000", cols="11")
+                ws.append_row(["Timestamp", "Student", "Class", "Lesson", "Topic", "Essay", "Overall_Band", "TR_CC_LR_GRA", "Feedback", "Mode"])
             
-            ws.append_row([str(datetime.now()), student, class_code, lesson, topic, band_score, str(criteria_scores), feedback])
+            ws.append_row([str(datetime.now()), student, class_code, lesson, topic, essay, band_score, str(criteria_scores), feedback, mode])
             st.toast("✅ Đã lưu bài Writing!", icon="💾")
     except: pass
 
@@ -184,6 +193,8 @@ def get_leaderboard(class_code):
             df_w = pd.DataFrame(ws_w.get_all_records())
             if not df_w.empty and 'Class' in df_w.columns:
                 df_w = df_w[df_w['Class'] == class_code]
+                
+                # Bỏ Lọc Mode để tính điểm trung bình từ tất cả các lần làm bài
                 if not df_w.empty:
                     # --- FIX LỖI: Chuẩn hóa tên ---
                     if 'Student' in df_w.columns:
@@ -211,7 +222,7 @@ CLASS_CONFIG = {
 
 HOMEWORK_CONFIG = {
     "PLA": {
-        "Speaking": ["Lesson 1: Work & Study", "Lesson 2: Habits & Lifestyle"],
+        "Speaking": ["Lesson 1: Work & Study", "Lesson 2: Habits & Lifestyle", "Lesson 3: Home & Transport"],
         "Reading":  ["Lesson 2: Marine Chronometer", "Lesson 3: Australian Agricultural Innovations"],
         "Writing":  [] 
     },
@@ -229,7 +240,11 @@ HOMEWORK_CONFIG = {
         "Speaking": [], "Reading": [], "Writing": []
     },
     "MAS": {
-        "Speaking": [], "Reading": [], "Writing": []
+        "Speaking": [], 
+        "Reading": [], 
+        "Writing": [
+            "Lesson 5: Resource Depletion (Task 2)"
+        ]
     }
 }
 
@@ -494,6 +509,14 @@ SPEAKING_CONTENT = {
         "6. Do you prefer spending time alone or with friends?",
         "7. Is there any new hobby you want to try in the future?",
         "8. How do you relax after a stressful day?"
+    ],    
+    "Lesson 3: Home & Transport": [
+        "1. Did you live in a house or an apartment when you were a child?",
+        "2. What was your favorite room in your childhood home?",
+        "3. Have you moved house many times?",
+        "4. How did you go to school when you were younger?",
+        "5. Did you enjoy traveling by bus/motorbike in the past?",
+        "6. Have you ever been stuck in a terrible traffic jam?"
     ]
 }
 
@@ -588,6 +611,13 @@ Do you agree or disagree?"""
         "question": """### 📝 IELTS Writing Task 1
 **The diagrams below show the town of Easternburg in 1995 and the present day.**
 Summarise the information by selecting and reporting the main features, and make comparisons where relevant."""
+    },
+    "Lesson 5: Resource Depletion (Task 2)": {
+        "type": "Task 2",
+        "time": 40,
+        "question": """### 📝 IELTS Writing Task 2
+**Some people believe that the depletion of natural resources is an unavoidable consequence of economic development.**
+To what extent do you agree or disagree?"""
     }
 }
 
@@ -926,6 +956,24 @@ else:
                 with st.spinner("Đang tải dữ liệu biểu đồ..."):
                     image_b64 = get_image_base64_from_url(data_w["image_url"])
 
+            st.divider()
+            
+            # --- HIỂN THỊ LỊCH SỬ LÀM BÀI ---
+            st.subheader("📜 Lịch sử bài làm gần nhất")
+            history_w = get_latest_log("Writing_Logs", user['name'], user['class'], lesson_w)
+            if history_w:
+                st.success(f"🕒 Lần làm bài gần nhất: **{history_w.get('Timestamp', '')}** | Chế độ: **{history_w.get('Mode', 'Practice')}**")
+                with st.expander("👀 Xem lại bài viết và Feedback", expanded=False):
+                    st.markdown("**📝 Bài viết của bạn:**")
+                    st.write(history_w.get('Essay', 'Không có dữ liệu bài viết.'))
+                    st.markdown(f"**🌟 Overall Band:** {history_w.get('Overall_Band', '')}")
+                    st.markdown("**💡 Feedback:**")
+                    st.markdown(history_w.get('Feedback', ''))
+            else:
+                st.info("Chưa có lịch sử làm bài cho bài học này.")
+                
+            st.divider()
+
             # === PHÂN LUỒNG TASK 1 VS TASK 2 ===
             
             # --- LUỒNG TASK 1: TRỰC TIẾP LÀM BÀI ---
@@ -957,7 +1005,7 @@ else:
                     if st.button("Nộp Bài Task 1"):
                         if len(essay_t1.split()) < 30: st.warning("Bài viết quá ngắn.")
                         else:
-                            with st.spinner("Đang chấm Task 1 (Task Achievement)..."):
+                            with st.spinner("Đang chấm Task 1..."):
                                 prompt_t1 = f"""
                                 ## ROLE: Senior IELTS Writing Examiner.
                                 ## TASK: Assess IELTS Writing Task 1 Essay.
@@ -966,74 +1014,80 @@ else:
                                 - Essay: {essay_t1}
 
                                 ## 🛡️ RUBRIC (TASK 1 - STRICT):
-                                * **BAND 9 (Expert):**
-                                    * **Task Achievement:** Đáp ứng trọn vẹn yêu cầu, Overview sắc sảo, dữ liệu chọn lọc tinh tế.
-                                    * **Coherence & Cohesion:** Mạch lạc hoàn hảo, tính liên kết không tì vết.
-                                    * **Lexical Resource:** Từ vựng tự nhiên như người bản xứ, chính xác tuyệt đối.
-                                    * **Grammar:** Cấu trúc đa dạng, hoàn toàn chính xác.
-
-                                * **BAND 8 (Very Good):**
-                                    * **Task Achievement:** Overview rõ ràng, làm nổi bật đặc điểm chính. Số liệu dẫn chứng đầy đủ, logic.
-                                    * **Coherence & Cohesion:** Sắp xếp logic, chia đoạn hợp lý.
-                                    * **Lexical Resource:** Vốn từ rộng, chính xác, rất ít lỗi.
-                                    * **Grammar:** Đa số câu không lỗi, dùng linh hoạt câu phức.
-
-                                * **BAND 7 (Good):**
-                                    * **Task Achievement:** Overview rõ ràng. Xu hướng chính được trình bày nhưng có thể chưa phát triển đầy đủ.
-                                    * **Coherence & Cohesion:** Có tổ chức logic, dùng từ nối tốt dù đôi khi máy móc.
-                                    * **Lexical Resource:** Dùng tốt từ vựng chủ đề/Collocations, sai sót nhỏ.
-                                    * **Grammar:** Thường xuyên viết được câu phức không lỗi.
-
-                                * **BAND 6 (Competent):**
-                                    * **Task Achievement:** Có Overview nhưng thông tin chưa chọn lọc kỹ. Chi tiết đôi khi không liên quan.
-                                    * **Coherence & Cohesion:** Có liên kết nhưng máy móc hoặc lỗi kết nối.
-                                    * **Lexical Resource:** Đủ dùng, cố dùng từ khó nhưng hay sai ngữ cảnh.
-                                    * **Grammar:** Kết hợp đơn/phức, lỗi ngữ pháp xuất hiện thường xuyên.
-
+                                * **BAND 4 (Limited):**
+                                    * **Task Achievement:** Lạc đề hoặc bỏ sót thông tin quan trọng.
+                                    * **Coherence & Cohesion:** Lộn xộn, không chia đoạn.
+                                    * **Lexical Resource:** Lặp từ, từ cơ bản.
+                                    * **Grammar:** Lỗi sai dày đặc.
+                                    
                                 * **BAND 5 (Modest):**
                                     * **Task Achievement:** Kể lể chi tiết máy móc, KHÔNG CÓ Overview rõ ràng. Số liệu có thể sai.
                                     * **Coherence & Cohesion:** Thiếu mạch lạc, lạm dụng/thiếu từ nối.
                                     * **Lexical Resource:** Hạn chế, sai chính tả gây khó hiểu.
                                     * **Grammar:** Chỉ dùng được câu đơn, cố dùng câu phức là sai.
 
-                                * **BAND 4 (Limited):**
-                                    * **Task Achievement:** Lạc đề hoặc bỏ sót thông tin quan trọng.
-                                    * **Coherence & Cohesion:** Lộn xộn, không chia đoạn.
-                                    * **Lexical Resource:** Lặp từ, từ cơ bản.
-                                    * **Grammar:** Lỗi sai dày đặc.
+                                * **BAND 6 (Competent):**
+                                    * **Task Achievement:** Có Overview nhưng thông tin chưa chọn lọc kỹ. Chi tiết đôi khi không liên quan.
+                                    * **Coherence & Cohesion:** Có liên kết nhưng máy móc hoặc lỗi kết nối.
+                                    * **Lexical Resource:** Đủ dùng, cố dùng từ khó nhưng hay sai ngữ cảnh.
+                                    * **Grammar:** Kết hợp đơn/phức, lỗi ngữ pháp xuất hiện thường xuyên.
+                                    
+                                * **BAND 7 (Good):**
+                                    * **Task Achievement:** Overview rõ ràng. Xu hướng chính được trình bày nhưng có thể chưa phát triển đầy đủ.
+                                    * **Coherence & Cohesion:** Có tổ chức logic, dùng từ nối tốt dù đôi khi máy móc.
+                                    * **Lexical Resource:** Dùng tốt từ vựng chủ đề/Collocations, sai sót nhỏ.
+                                    * **Grammar:** Thường xuyên viết được câu phức không lỗi.
+
+                                * **BAND 8 (Very Good):**
+                                    * **Task Achievement:** Overview rõ ràng, làm nổi bật đặc điểm chính. Số liệu dẫn chứng đầy đủ, logic.
+                                    * **Coherence & Cohesion:** Sắp xếp logic, chia đoạn hợp lý.
+                                    * **Lexical Resource:** Vốn từ rộng, chính xác, rất ít lỗi.
+                                    * **Grammar:** Đa số câu không lỗi, dùng linh hoạt câu phức.
+                                    
+                                * **BAND 9 (Expert):**
+                                    * **Task Achievement:** Đáp ứng trọn vẹn yêu cầu, Overview sắc sảo, dữ liệu chọn lọc tinh tế.
+                                    * **Coherence & Cohesion:** Mạch lạc hoàn hảo, tính liên kết không tì vết.
+                                    * **Lexical Resource:** Từ vựng tự nhiên như người bản xứ, chính xác tuyệt đối.
+                                    * **Grammar:** Cấu trúc đa dạng, hoàn toàn chính xác.
 
                                 ## OUTPUT: JSON STRICTLY.
                                 {{
-                                    "TA": [int], "CC": [int], "LR": [int], "GRA": [int],
-                                    "Overall": [float],
-                                    "Feedback": "Markdown text detail..."
+                                    "TA": int, "CC": int, "LR": int, "GRA": int,
+                                    "Overall": float,
+                                    "Feedback": "Nhận xét chi tiết bằng Tiếng Việt (Markdown). Cấu trúc linh hoạt nhưng cần đi qua từng tiêu chí (Task Response, Coherence & Cohesion, Lexical Resource, Grammar). Ở mỗi tiêu chí, hãy chỉ ra các điểm cần cải thiện dựa trên rubric và đưa ra cách sửa cụ thể (ví dụ: trích dẫn câu gốc của học viên và viết lại câu mới tốt hơn)."
                                 }}
                                 """
                                 res = call_gemini(prompt_t1, expect_json=True, image_data=image_b64)
                                 if res:
                                     try:
                                         grade = json.loads(res)
-                                        # Save result to session to display
                                         st.session_state['writing_result_t1'] = grade
                                         
-                                        # Map TA -> TR for storage consistency if needed, or just store as is
-                                        crit = json.dumps({"TA": grade['TA'], "CC": grade['CC'], "LR": grade['LR'], "GRA": grade['GRA']})
-                                        save_writing_log(user['name'], user['class'], lesson_w, "Task 1", grade['Overall'], crit, grade['Feedback'], mode=mode_w)
+                                        # Use .get() defensively in case AI forgets keys
+                                        crit = json.dumps({
+                                            "TA": grade.get('TA', grade.get('TR', 0)), 
+                                            "CC": grade.get('CC', 0), 
+                                            "LR": grade.get('LR', 0), 
+                                            "GRA": grade.get('GRA', 0)
+                                        })
+                                        save_writing_log(user['name'], user['class'], lesson_w, "Task 1", grade.get('Overall', 0), crit, grade.get('Feedback', ''), mode=mode_w)
+                                    except Exception as e:
+                                        st.error(f"Lỗi chấm bài: {e}")
+                                    else:
                                         st.rerun()
-                                    except: st.error("Lỗi chấm bài.")
 
                 # Hiện kết quả Task 1
                 if 'writing_result_t1' in st.session_state:
                     res = st.session_state['writing_result_t1']
                     st.balloons()
-                    st.success(f"OVERALL BAND: {res['Overall']}")
+                    st.success(f"OVERALL BAND: {res.get('Overall', 0)}")
                     c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Task Achievement", res['TA'])
-                    c2.metric("Coherence", res['CC'])
-                    c3.metric("Lexical", res['LR'])
-                    c4.metric("Grammar", res['GRA'])
+                    c1.metric("Task Achievement", extract_score(res.get('TA', res.get('TR', 0))))
+                    c2.metric("Coherence", extract_score(res.get('CC', 0)))
+                    c3.metric("Lexical", extract_score(res.get('LR', 0)))
+                    c4.metric("Grammar", extract_score(res.get('GRA', 0)))
                     with st.container(border=True):
-                        st.markdown(res['Feedback'])
+                        st.markdown(res.get('Feedback', ''))
                     if st.button("Làm lại Task 1"):
                         del st.session_state['writing_result_t1']
                         st.rerun()
@@ -1104,11 +1158,22 @@ else:
                                 prompt = f"""
                                 Role: IELTS Writing Examiner. Check Logic & Coherence for Task 2 Outline.
                                 Topic: {data_w['question']}
-                                Intro: {intro}
-                                Body1: {body1}
-                                Body2: {body2}
-                                Conclusion: {conc}
-                                Output: Vietnamese Markdown. Focus on Logical Fallacies & Structure.
+                                Input Outline:
+                                - Intro: {intro}
+                                - Body 1: {body1}
+                                - Body 2: {body2}
+                                - Conclusion: {conc}
+
+                                Task:
+                                1. Analyze Logical Flow & Coherence.
+                                2. Detect Logical Fallacies explicitly:
+                                   - Hasty Generalization (Khái quát hóa vội vã)
+                                   - Slippery Slope (Trượt dốc phi logic)
+                                   - Circular Reasoning (Lập luận luẩn quẩn)
+                                   - Other logical gaps.
+                                3. Suggest at least 5 Academic Collocations based on the user's ideas to upgrade their vocabulary.
+
+                                Output: Vietnamese Markdown. Focus on Logical Fallacies & Structure & Vocabulary Enhancement.
                                 """
                                 res = call_gemini(prompt)
                                 if res:
@@ -1149,19 +1214,53 @@ else:
                     if st.button("Nộp Bài Task 2"):
                         if len(essay.split()) < 50: st.warning("Bài viết quá ngắn.")
                         else:
-                            with st.spinner("Đang chấm điểm Task 2 (Task Response)..."):
+                            with st.spinner("Đang chấm điểm Task 2..."):
                                 prompt_t2 = f"""
                                 ## ROLE: Senior IELTS Examiner.
-                                ## TASK: Assess IELTS Writing Task 2.
+                                ## TASK: Assess IELTS Writing Task 2 based on rubric provided.
                                 ## TOPIC: {data_w['question']}
                                 ## ESSAY: {essay}
                                 ## RUBRIC (TASK 2):
-                                Use standard IELTS Writing Task 2 Band Descriptors (TR, CC, LR, GRA).
+                                * **BAND 4 (Limited):**
+                                    * **Task Response:** Lạc đề hoặc quan điểm không rõ ràng.
+                                    * **Coherence & Cohesion:** Sắp xếp lộn xộn, không chia đoạn.
+                                    * **Lexical Resource:** Vốn từ nghèo nàn, lặp từ nhiều.
+                                    * **Grammar:** Lỗi sai dày đặc, khó hiểu.
+
+                                * **BAND 5 (Modest):**
+                                    * **Task Response:** Trả lời một phần yêu cầu, lập luận chưa đầy đủ.
+                                    * **Coherence & Cohesion:** Có chia đoạn nhưng thiếu mạch lạc, từ nối máy móc.
+                                    * **Lexical Resource:** Vốn từ hạn chế, lỗi chính tả gây khó đọc.
+                                    * **Grammar:** Cố dùng câu phức nhưng sai nhiều.
+
+                                * **BAND 6 (Competent):**
+                                    * **Task Response:** Trả lời đầy đủ các phần, quan điểm rõ ràng nhưng phát triển ý chưa sâu.
+                                    * **Coherence & Cohesion:** Mạch lạc, có sự phát triển ý, nhưng liên kết câu đôi khi bị lỗi.
+                                    * **Lexical Resource:** Đủ dùng, cố gắng dùng từ ít phổ biến nhưng đôi khi sai ngữ cảnh.
+                                    * **Grammar:** Kết hợp câu đơn và câu phức, vẫn còn lỗi sai nhưng không gây hiểu lầm.
+
+                                * **BAND 7 (Good):**
+                                    * **Task Response:** Giải quyết trọn vẹn yêu cầu, quan điểm xuyên suốt, ý chính được mở rộng.
+                                    * **Coherence & Cohesion:** Tổ chức logic, sử dụng từ nối linh hoạt.
+                                    * **Lexical Resource:** Sử dụng từ vựng linh hoạt, có ý thức về phong cách và Collocation.
+                                    * **Grammar:** Nhiều câu không có lỗi, kiểm soát tốt ngữ pháp và dấu câu.
+
+                                * **BAND 8 (Very Good):**
+                                    * **Task Response:** Câu trả lời phát triển đầy đủ, ý tưởng sâu sắc.
+                                    * **Coherence & Cohesion:** Sắp xếp thông tin và ý tưởng một cách logic, mạch lạc tự nhiên.
+                                    * **Lexical Resource:** Vốn từ phong phú, sử dụng chính xác và tự nhiên.
+                                    * **Grammar:** Đa dạng cấu trúc, hầu như không có lỗi.
+
+                                * **BAND 9 (Expert):**
+                                    * **Task Response:** Đáp ứng trọn vẹn yêu cầu, lập luận sắc bén, thuyết phục hoàn toàn.
+                                    * **Coherence & Cohesion:** Mạch lạc hoàn hảo, tính liên kết không tì vết.
+                                    * **Lexical Resource:** Từ vựng tinh tế, tự nhiên như người bản xứ.
+                                    * **Grammar:** Hoàn toàn chính xác, cấu trúc đa dạng và phức tạp.
                                 ## OUTPUT: JSON STRICTLY.
                                 {{
-                                    "TR": [int], "CC": [int], "LR": [int], "GRA": [int],
-                                    "Overall": [float],
-                                    "Feedback": "Markdown detail..."
+                                    "TA": int, "CC": int, "LR": int, "GRA": int,
+                                    "Overall": float,
+                                    "Feedback": "Nhận xét chi tiết bằng Tiếng Việt (Markdown). Cấu trúc linh hoạt nhưng cần đi qua từng tiêu chí (Task Response, Coherence & Cohesion, Lexical Resource, Grammar). Ở mỗi tiêu chí, hãy chỉ ra các điểm cần cải thiện dựa trên rubric và đưa ra cách sửa cụ thể (ví dụ: trích dẫn câu gốc của học viên và viết lại câu mới tốt hơn)."
                                 }}
                                 """
                                 res = call_gemini(prompt_t2, expect_json=True)
@@ -1169,23 +1268,32 @@ else:
                                     try:
                                         grade = json.loads(res)
                                         st.session_state['writing_result_t2'] = grade
-                                        crit = json.dumps({"TR": grade['TR'], "CC": grade['CC'], "LR": grade['LR'], "GRA": grade['GRA']})
-                                        save_writing_log(user['name'], user['class'], lesson_w, "Task 2", grade['Overall'], crit, grade['Feedback'], mode=mode_w)
+                                        
+                                        # Use .get() defensively in case AI forgets keys
+                                        crit = json.dumps({
+                                            "TR": grade.get('TR', grade.get('TA', 0)), 
+                                            "CC": grade.get('CC', 0), 
+                                            "LR": grade.get('LR', 0), 
+                                            "GRA": grade.get('GRA', 0)
+                                        })
+                                        save_writing_log(user['name'], user['class'], lesson_w, "Task 2", grade.get('Overall', 0), crit, grade.get('Feedback', ''), mode=mode_w)
+                                    except Exception as e:
+                                        st.error(f"Lỗi chấm bài: {e}")
+                                    else:
                                         st.rerun()
-                                    except: st.error("Lỗi chấm bài.")
 
                 # Hiện kết quả Task 2
                 if 'writing_result_t2' in st.session_state:
                     res = st.session_state['writing_result_t2']
                     st.balloons()
-                    st.success(f"OVERALL BAND: {res['Overall']}")
+                    st.success(f"OVERALL BAND: {res.get('Overall', 0)}")
                     c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Task Response", res['TR'])
-                    c2.metric("Coherence", res['CC'])
-                    c3.metric("Lexical", res['LR'])
-                    c4.metric("Grammar", res['GRA'])
+                    c1.metric("Task Response", extract_score(res.get('TR', res.get('TA', 0))))
+                    c2.metric("Coherence", extract_score(res.get('CC', 0)))
+                    c3.metric("Lexical", extract_score(res.get('LR', 0)))
+                    c4.metric("Grammar", extract_score(res.get('GRA', 0)))
                     with st.container(border=True):
-                        st.markdown(res['Feedback'])
+                        st.markdown(res.get('Feedback', ''))
                     if st.button("Làm lại Task 2"):
                         del st.session_state['writing_result_t2']
                         st.rerun()
@@ -1248,36 +1356,41 @@ else:
 
                                 ## GRADING RUBRIC (TIÊU CHÍ PHÂN LOẠI CỐT LÕI):
 
-                                * **BAND 9 (Native-like):**
-                                * **Fluency:** Trôi chảy tự nhiên, không hề vấp váp.
-                                * **Vocab:** Chính xác tuyệt đối, tinh tế.
-                                * **Pronunciation:** Hoàn hảo. Transcript sạch bóng, không có bất kỳ từ nào sai ngữ cảnh hay vô nghĩa.
-
-                                * **BAND 8 (Rất tốt):**
-                                * **Fluency:** Mạch lạc, hiếm khi lặp lại.
-                                * **Vocab:** Dùng điêu luyện Idioms/từ hiếm.
-                                * **Pronunciation:** Dễ hiểu xuyên suốt. Ngữ điệu tốt. Transcript chính xác 99%.
-
-                                * **BAND 7 (Tốt):**
-                                * **Fluency:** Nói dài dễ dàng. Từ nối linh hoạt.
-                                * **Vocab:** Dùng được Collocation tự nhiên.
-                                * **Grammar:** Thường xuyên có câu phức không lỗi.
-                                * **Pronunciation:** Dễ hiểu. *(Lưu ý: Chấp nhận một vài lỗi nhỏ, nhưng nếu Transcript xuất hiện từ lạ/sai ngữ cảnh, hãy trừ điểm).*
-
-                                * **BAND 6 (Khá):**
-                                * **Fluency:** Khá trôi chảy, nhưng đôi khi mất mạch lạc, từ nối máy móc.
-                                * **Vocab:** Đủ để bàn luận, biết Paraphrase.
-                                * **Grammar:** Có dùng câu phức nhưng thường xuyên sai.
-                                * **Pronunciation:** Rõ ràng phần lớn thời gian. *(Lưu ý: Nếu thấy từ vựng bị biến đổi thành từ khác nghe na ná - Sound-alike words - hoặc 1-2 đoạn vô nghĩa, hãy đánh dấu là Lỗi Phát Âm và trừ điểm).*
-
-                                * **BAND 5 (Trung bình):**
-                                * **Fluency:** Ngắt quãng nhiều, lặp từ.
-                                * **Grammar:** Hầu như chỉ dùng câu đơn.
-                                * **Pronunciation:** Có nhiều từ vô nghĩa, không hợp ngữ cảnh *(Dấu hiệu nhận biết: Transcript thường xuyên xuất hiện các từ vô nghĩa hoặc sai hoàn toàn ngữ cảnh do máy không nhận diện được âm, và trừ điểm).*
-
                                 * **BAND 4 (Hạn chế):**
-                                * **Fluency:** Câu cụt, ngắt quãng dài, nói còn dang dở.
-                                * **Pronunciation:** Khó hiểu. Transcript gãy vụn, chứa nhiều từ không liên quan đến chủ đề.
+                                * **Fluency:** Câu cụt, ngắt quãng dài, nói còn dang dở.
+                                * **Vocab:** Vốn từ rất hạn chế, lặp lại thường xuyên, chỉ dùng từ đơn lẻ.
+                                * **Grammar:** Không biết chia thì quá khứ, sai lỗi hòa hợp chủ ngữ - động từ nghiêm trọng.
+                                * **Pronunciation:** Khó hiểu. Transcript gãy vụn, chứa nhiều từ không liên quan đến chủ đề.
+
+                                * **BAND 5 (Trung bình):**
+                                * **Fluency:** Nói khá ngắn, Ngắt quãng nhiều, lặp từ.
+                                * **Vocab:** Vốn từ đủ dùng cho chủ đề quen thuộc nhưng hạn chế, khó diễn đạt ý phức tạp.
+                                * **Grammar:** Hầu như chỉ dùng câu đơn. Thường xuyên quên chia thì quá khứ và sai hòa hợp chủ ngữ - động từ.
+                                * **Pronunciation:** Có nhiều từ vô nghĩa, không hợp ngữ cảnh *(Dấu hiệu nhận biết: Transcript thường xuyên xuất hiện các từ vô nghĩa hoặc sai hoàn toàn ngữ cảnh do máy không nhận diện được âm, và trừ điểm).*
+
+                                * **BAND 6 (Khá):**
+                                * **Fluency:** Nói dài, Khá trôi chảy, nhưng đôi khi mất mạch lạc, từ nối máy móc.
+                                * **Vocab:** Đủ để bàn luận, biết Paraphrase.
+                                * **Grammar:** Có dùng câu phức nhưng thường xuyên sai. Chia thì quá khứ chưa đều, còn lỗi hòa hợp chủ ngữ - động từ.
+                                * **Pronunciation:** Rõ ràng phần lớn thời gian. *(Lưu ý: Nếu thấy từ vựng bị biến đổi thành từ khác nghe na ná - Sound-alike words - hoặc 1-2 đoạn vô nghĩa, hãy đánh dấu là Lỗi Phát Âm và trừ điểm).*
+
+                                * **BAND 7 (Tốt):**
+                                * **Fluency:** Nói dài dễ dàng, khai thác sâu. Từ nối linh hoạt.
+                                * **Vocab:** Dùng được Collocation tự nhiên.
+                                * **Grammar:** Thường xuyên có câu phức không lỗi. Kiểm soát tốt thì quá khứ và hòa hợp chủ ngữ - động từ.
+                                * **Pronunciation:** Dễ hiểu. *(Lưu ý: Chấp nhận một vài lỗi nhỏ, nhưng nếu Transcript xuất hiện từ lạ/sai ngữ cảnh, hãy trừ điểm).*
+
+                                * **BAND 8 (Rất tốt):**
+                                * **Fluency:** Mạch lạc, hiếm khi lặp lại.
+                                * **Vocab:** Dùng điêu luyện Idioms/từ hiếm.
+                                * **Grammar:** Hoàn toàn chính xác về thì quá khứ và hòa hợp chủ ngữ - động từ.
+                                * **Pronunciation:** Dễ hiểu xuyên suốt. Ngữ điệu tốt. Transcript chính xác 99%.
+
+                                * **BAND 9 (Native-like):**
+                                * **Fluency:** Trôi chảy tự nhiên, không hề vấp váp.
+                                * **Vocab:** Chính xác tuyệt đối, tinh tế.
+                                * **Grammar:** Ngữ pháp và thì hoàn hảo tuyệt đối.
+                                * **Pronunciation:** Hoàn hảo. Transcript sạch bóng, không có bất kỳ từ nào sai ngữ cảnh hay vô nghĩa.
 
                                 ## OUTPUT FORMAT (Vietnamese Markdown):
                                 Trả về kết quả chi tiết:
@@ -1343,36 +1456,41 @@ else:
                             prompt_full= f"""Role: Examiner. Assess IELTS Speaking Part 1 about "{q_p1}". Transcript EXACTLY what user said (no auto-correct). Give Band Score & Feedback, encouraging tone.
                                 ## GRADING RUBRIC (TIÊU CHÍ PHÂN LOẠI CỐT LÕI):
 
-                                * **BAND 9 (Native-like):**
-                                * **Fluency:** Trôi chảy tự nhiên, không hề vấp váp.
-                                * **Vocab:** Chính xác tuyệt đối, tinh tế.
-                                * **Pronunciation:** Hoàn hảo. Transcript sạch bóng, không có bất kỳ từ nào sai ngữ cảnh hay vô nghĩa.
+* **BAND 4 (Hạn chế):**
+                                * **Fluency:** Câu cụt, ngắt quãng dài, nói còn dang dở.
+                                * **Vocab:** Vốn từ rất hạn chế, lặp lại thường xuyên, chỉ dùng từ đơn lẻ.
+                                * **Grammar:** Không biết chia thì quá khứ, sai lỗi hòa hợp chủ ngữ - động từ nghiêm trọng.
+                                * **Pronunciation:** Khó hiểu. Transcript gãy vụn, chứa nhiều từ không liên quan đến chủ đề.
 
-                                * **BAND 8 (Rất tốt):**
-                                * **Fluency:** Mạch lạc, hiếm khi lặp lại.
-                                * **Vocab:** Dùng điêu luyện Idioms/từ hiếm.
-                                * **Pronunciation:** Dễ hiểu xuyên suốt. Ngữ điệu tốt. Transcript chính xác 99%.
+                                * **BAND 5 (Trung bình):**
+                                * **Fluency:** Nói khá ngắn, Ngắt quãng nhiều, lặp từ.
+                                * **Vocab:** Vốn từ đủ dùng cho chủ đề quen thuộc nhưng hạn chế, khó diễn đạt ý phức tạp.
+                                * **Grammar:** Hầu như chỉ dùng câu đơn. Thường xuyên quên chia thì quá khứ và sai hòa hợp chủ ngữ - động từ.
+                                * **Pronunciation:** Có nhiều từ vô nghĩa, không hợp ngữ cảnh *(Dấu hiệu nhận biết: Transcript thường xuyên xuất hiện các từ vô nghĩa hoặc sai hoàn toàn ngữ cảnh do máy không nhận diện được âm, và trừ điểm).*
 
-                                * **BAND 7 (Tốt):**
-                                * **Fluency:** Nói dài dễ dàng. Từ nối linh hoạt.
-                                * **Vocab:** Dùng được Collocation tự nhiên.
-                                * **Grammar:** Thường xuyên có câu phức không lỗi.
-                                * **Pronunciation:** Dễ hiểu. *(Lưu ý: Chấp nhận một vài lỗi nhỏ, nhưng nếu Transcript xuất hiện từ lạ/sai ngữ cảnh, hãy trừ điểm nhẹ).*
+                                * **BAND 6 (Khá):**
+                                * **Fluency:** Nói dài, Khá trôi chảy, nhưng đôi khi mất mạch lạc, từ nối máy móc.
+                                * **Vocab:** Đủ để bàn luận, biết Paraphrase.
+                                * **Grammar:** Có dùng câu phức nhưng thường xuyên sai. Chia thì quá khứ chưa đều, còn lỗi hòa hợp chủ ngữ - động từ.
+                                * **Pronunciation:** Rõ ràng phần lớn thời gian. *(Lưu ý: Nếu thấy từ vựng bị biến đổi thành từ khác nghe na ná - Sound-alike words - hoặc 1-2 đoạn vô nghĩa, hãy đánh dấu là Lỗi Phát Âm và trừ điểm).*
 
-                                * **BAND 6 (Khá):**
-                                * **Fluency:** Đôi khi mất mạch, từ nối máy móc.
-                                * **Vocab:** Đủ để bàn luận, biết Paraphrase.
-                                * **Grammar:** Có dùng câu phức nhưng thường xuyên sai.
-                                * **Pronunciation:** Rõ ràng phần lớn thời gian. *(Lưu ý: Nếu thấy từ vựng bị biến đổi thành từ khác nghe na ná - Sound-alike words - hoặc 1-2 đoạn vô nghĩa, hãy đánh dấu là Lỗi Phát Âm).*
+                                * **BAND 7 (Tốt):**
+                                * **Fluency:** Nói dài dễ dàng, khai thác sâu. Từ nối linh hoạt.
+                                * **Vocab:** Dùng được Collocation tự nhiên.
+                                * **Grammar:** Thường xuyên có câu phức không lỗi. Kiểm soát tốt thì quá khứ và hòa hợp chủ ngữ - động từ.
+                                * **Pronunciation:** Dễ hiểu. *(Lưu ý: Chấp nhận một vài lỗi nhỏ, nhưng nếu Transcript xuất hiện từ lạ/sai ngữ cảnh, hãy trừ điểm).*
 
-                                * **BAND 5 (Trung bình):**
-                                * **Fluency:** Ngắt quãng nhiều, lặp từ.
-                                * **Grammar:** Chỉ đúng khi dùng câu đơn.
-                                * **Pronunciation:** *(Dấu hiệu nhận biết: Transcript thường xuyên xuất hiện các từ vô nghĩa hoặc sai hoàn toàn ngữ cảnh do máy không nhận diện được âm).*
+                                * **BAND 8 (Rất tốt):**
+                                * **Fluency:** Mạch lạc, hiếm khi lặp lại.
+                                * **Vocab:** Dùng điêu luyện Idioms/từ hiếm.
+                                * **Grammar:** Hoàn toàn chính xác về thì quá khứ và hòa hợp chủ ngữ - động từ.
+                                * **Pronunciation:** Dễ hiểu xuyên suốt. Ngữ điệu tốt. Transcript chính xác 99%.
 
-                                * **BAND 4 (Hạn chế):**
-                                * **Fluency:** Câu cụt, ngắt quãng dài.
-                                * **Pronunciation:** Khó hiểu. Transcript gãy vụn, chứa nhiều từ không liên quan đến chủ đề.
+                                * **BAND 9 (Native-like):**
+                                * **Fluency:** Trôi chảy tự nhiên, không hề vấp váp.
+                                * **Vocab:** Chính xác tuyệt đối, tinh tế.
+                                * **Grammar:** Ngữ pháp và thì hoàn hảo tuyệt đối.
+                                * **Pronunciation:** Hoàn hảo. Transcript sạch bóng, không có bất kỳ từ nào sai ngữ cảnh hay vô nghĩa.
                                 ## OUTPUT FORMAT (Vietnamese Markdown):
                                 Trả về kết quả chi tiết:
 
@@ -1432,36 +1550,41 @@ else:
                             prompt_full_p2 = f"""Role: Examiner. Assess IELTS Speaking response for Part 2 "{data_p2['cue_card']}". Transcript EXACTLY what user said (no auto-correct). Give Band Score & Feedback, encouraging tone.
                                 ## GRADING RUBRIC (TIÊU CHÍ PHÂN LOẠI CỐT LÕI):
 
-                                * **BAND 9 (Native-like):**
-                                * **Fluency:** Trôi chảy tự nhiên, không hề vấp váp.
-                                * **Vocab:** Chính xác tuyệt đối, tinh tế.
-                                * **Pronunciation:** Hoàn hảo. Transcript sạch bóng, không có bất kỳ từ nào sai ngữ cảnh hay vô nghĩa.
+* **BAND 4 (Hạn chế):**
+                                * **Fluency:** Câu cụt, ngắt quãng dài, nói còn dang dở.
+                                * **Vocab:** Vốn từ rất hạn chế, lặp lại thường xuyên, chỉ dùng từ đơn lẻ.
+                                * **Grammar:** Không biết chia thì quá khứ, sai lỗi hòa hợp chủ ngữ - động từ nghiêm trọng.
+                                * **Pronunciation:** Khó hiểu. Transcript gãy vụn, chứa nhiều từ không liên quan đến chủ đề.
 
-                                * **BAND 8 (Rất tốt):**
-                                * **Fluency:** Mạch lạc, hiếm khi lặp lại.
-                                * **Vocab:** Dùng điêu luyện Idioms/từ hiếm.
-                                * **Pronunciation:** Dễ hiểu xuyên suốt. Ngữ điệu tốt. Transcript chính xác 99%.
+                                * **BAND 5 (Trung bình):**
+                                * **Fluency:** Nói khá ngắn, Ngắt quãng nhiều, lặp từ.
+                                * **Vocab:** Vốn từ đủ dùng cho chủ đề quen thuộc nhưng hạn chế, khó diễn đạt ý phức tạp.
+                                * **Grammar:** Hầu như chỉ dùng câu đơn. Thường xuyên quên chia thì quá khứ và sai hòa hợp chủ ngữ - động từ.
+                                * **Pronunciation:** Có nhiều từ vô nghĩa, không hợp ngữ cảnh *(Dấu hiệu nhận biết: Transcript thường xuyên xuất hiện các từ vô nghĩa hoặc sai hoàn toàn ngữ cảnh do máy không nhận diện được âm, và trừ điểm).*
 
-                                * **BAND 7 (Tốt):**
-                                * **Fluency:** Nói dài dễ dàng. Từ nối linh hoạt.
-                                * **Vocab:** Dùng được Collocation tự nhiên.
-                                * **Grammar:** Thường xuyên có câu phức không lỗi.
-                                * **Pronunciation:** Dễ hiểu. *(Lưu ý: Chấp nhận một vài lỗi nhỏ, nhưng nếu Transcript xuất hiện từ lạ/sai ngữ cảnh, hãy trừ điểm nhẹ).*
+                                * **BAND 6 (Khá):**
+                                * **Fluency:** Nói dài, Khá trôi chảy, nhưng đôi khi mất mạch lạc, từ nối máy móc.
+                                * **Vocab:** Đủ để bàn luận, biết Paraphrase.
+                                * **Grammar:** Có dùng câu phức nhưng thường xuyên sai. Chia thì quá khứ chưa đều, còn lỗi hòa hợp chủ ngữ - động từ.
+                                * **Pronunciation:** Rõ ràng phần lớn thời gian. *(Lưu ý: Nếu thấy từ vựng bị biến đổi thành từ khác nghe na ná - Sound-alike words - hoặc 1-2 đoạn vô nghĩa, hãy đánh dấu là Lỗi Phát Âm và trừ điểm).*
 
-                                * **BAND 6 (Khá):**
-                                * **Fluency:** Đôi khi mất mạch, từ nối máy móc.
-                                * **Vocab:** Đủ để bàn luận, biết Paraphrase.
-                                * **Grammar:** Có dùng câu phức nhưng thường xuyên sai.
-                                * **Pronunciation:** Rõ ràng phần lớn thời gian. *(Lưu ý: Nếu thấy từ vựng bị biến đổi thành từ khác nghe na ná - Sound-alike words - hoặc 1-2 đoạn vô nghĩa, hãy đánh dấu là Lỗi Phát Âm).*
+                                * **BAND 7 (Tốt):**
+                                * **Fluency:** Nói dài dễ dàng, khai thác sâu. Từ nối linh hoạt.
+                                * **Vocab:** Dùng được Collocation tự nhiên.
+                                * **Grammar:** Thường xuyên có câu phức không lỗi. Kiểm soát tốt thì quá khứ và hòa hợp chủ ngữ - động từ.
+                                * **Pronunciation:** Dễ hiểu. *(Lưu ý: Chấp nhận một vài lỗi nhỏ, nhưng nếu Transcript xuất hiện từ lạ/sai ngữ cảnh, hãy trừ điểm).*
 
-                                * **BAND 5 (Trung bình):**
-                                * **Fluency:** Ngắt quãng nhiều, lặp từ.
-                                * **Grammar:** Chỉ đúng khi dùng câu đơn.
-                                * **Pronunciation:** *(Dấu hiệu nhận biết: Transcript thường xuyên xuất hiện các từ vô nghĩa hoặc sai hoàn toàn ngữ cảnh do máy không nhận diện được âm).*
+                                * **BAND 8 (Rất tốt):**
+                                * **Fluency:** Mạch lạc, hiếm khi lặp lại.
+                                * **Vocab:** Dùng điêu luyện Idioms/từ hiếm.
+                                * **Grammar:** Hoàn toàn chính xác về thì quá khứ và hòa hợp chủ ngữ - động từ.
+                                * **Pronunciation:** Dễ hiểu xuyên suốt. Ngữ điệu tốt. Transcript chính xác 99%.
 
-                                * **BAND 4 (Hạn chế):**
-                                * **Fluency:** Câu cụt, ngắt quãng dài.
-                                * **Pronunciation:** Khó hiểu. Transcript gãy vụn, chứa nhiều từ không liên quan đến chủ đề.
+                                * **BAND 9 (Native-like):**
+                                * **Fluency:** Trôi chảy tự nhiên, không hề vấp váp.
+                                * **Vocab:** Chính xác tuyệt đối, tinh tế.
+                                * **Grammar:** Ngữ pháp và thì hoàn hảo tuyệt đối.
+                                * **Pronunciation:** Hoàn hảo. Transcript sạch bóng, không có bất kỳ từ nào sai ngữ cảnh hay vô nghĩa.
                                 ## OUTPUT FORMAT (Vietnamese Markdown):
                                 Trả về kết quả chi tiết:
 
@@ -1513,36 +1636,41 @@ else:
                             prompt_full_p3 = f"""Role: Examiner. Assess IELTS Speaking response for Part 3 "{data_p3['part3']}". Transcript EXACTLY what user said (no auto-correct). Give Band Score & Feedback, encouraging tone.
                                 ## GRADING RUBRIC (TIÊU CHÍ PHÂN LOẠI CỐT LÕI):
 
-                                * **BAND 9 (Native-like):**
-                                * **Fluency:** Trôi chảy tự nhiên, không hề vấp váp.
-                                * **Vocab:** Chính xác tuyệt đối, tinh tế.
-                                * **Pronunciation:** Hoàn hảo. Transcript sạch bóng, không có bất kỳ từ nào sai ngữ cảnh hay vô nghĩa.
+* **BAND 4 (Hạn chế):**
+                                * **Fluency:** Câu cụt, ngắt quãng dài, nói còn dang dở.
+                                * **Vocab:** Vốn từ rất hạn chế, lặp lại thường xuyên, chỉ dùng từ đơn lẻ.
+                                * **Grammar:** Không biết chia thì quá khứ, sai lỗi hòa hợp chủ ngữ - động từ nghiêm trọng.
+                                * **Pronunciation:** Khó hiểu. Transcript gãy vụn, chứa nhiều từ không liên quan đến chủ đề.
 
-                                * **BAND 8 (Rất tốt):**
-                                * **Fluency:** Mạch lạc, hiếm khi lặp lại.
-                                * **Vocab:** Dùng điêu luyện Idioms/từ hiếm.
-                                * **Pronunciation:** Dễ hiểu xuyên suốt. Ngữ điệu tốt. Transcript chính xác 99%.
+                                * **BAND 5 (Trung bình):**
+                                * **Fluency:** Nói khá ngắn, Ngắt quãng nhiều, lặp từ.
+                                * **Vocab:** Vốn từ đủ dùng cho chủ đề quen thuộc nhưng hạn chế, khó diễn đạt ý phức tạp.
+                                * **Grammar:** Hầu như chỉ dùng câu đơn. Thường xuyên quên chia thì quá khứ và sai hòa hợp chủ ngữ - động từ.
+                                * **Pronunciation:** Có nhiều từ vô nghĩa, không hợp ngữ cảnh *(Dấu hiệu nhận biết: Transcript thường xuyên xuất hiện các từ vô nghĩa hoặc sai hoàn toàn ngữ cảnh do máy không nhận diện được âm, và trừ điểm).*
 
-                                * **BAND 7 (Tốt):**
-                                * **Fluency:** Nói dài dễ dàng. Từ nối linh hoạt.
-                                * **Vocab:** Dùng được Collocation tự nhiên.
-                                * **Grammar:** Thường xuyên có câu phức không lỗi.
-                                * **Pronunciation:** Dễ hiểu. *(Lưu ý: Chấp nhận một vài lỗi nhỏ, nhưng nếu Transcript xuất hiện từ lạ/sai ngữ cảnh, hãy trừ điểm nhẹ).*
+                                * **BAND 6 (Khá):**
+                                * **Fluency:** Nói dài, Khá trôi chảy, nhưng đôi khi mất mạch lạc, từ nối máy móc.
+                                * **Vocab:** Đủ để bàn luận, biết Paraphrase.
+                                * **Grammar:** Có dùng câu phức nhưng thường xuyên sai. Chia thì quá khứ chưa đều, còn lỗi hòa hợp chủ ngữ - động từ.
+                                * **Pronunciation:** Rõ ràng phần lớn thời gian. *(Lưu ý: Nếu thấy từ vựng bị biến đổi thành từ khác nghe na ná - Sound-alike words - hoặc 1-2 đoạn vô nghĩa, hãy đánh dấu là Lỗi Phát Âm và trừ điểm).*
 
-                                * **BAND 6 (Khá):**
-                                * **Fluency:** Đôi khi mất mạch, từ nối máy móc.
-                                * **Vocab:** Đủ để bàn luận, biết Paraphrase.
-                                * **Grammar:** Có dùng câu phức nhưng thường xuyên sai.
-                                * **Pronunciation:** Rõ ràng phần lớn thời gian. *(Lưu ý: Nếu thấy từ vựng bị biến đổi thành từ khác nghe na ná - Sound-alike words - hoặc 1-2 đoạn vô nghĩa, hãy đánh dấu là Lỗi Phát Âm).*
+                                * **BAND 7 (Tốt):**
+                                * **Fluency:** Nói dài dễ dàng, khai thác sâu. Từ nối linh hoạt.
+                                * **Vocab:** Dùng được Collocation tự nhiên.
+                                * **Grammar:** Thường xuyên có câu phức không lỗi. Kiểm soát tốt thì quá khứ và hòa hợp chủ ngữ - động từ.
+                                * **Pronunciation:** Dễ hiểu. *(Lưu ý: Chấp nhận một vài lỗi nhỏ, nhưng nếu Transcript xuất hiện từ lạ/sai ngữ cảnh, hãy trừ điểm).*
 
-                                * **BAND 5 (Trung bình):**
-                                * **Fluency:** Ngắt quãng nhiều, lặp từ.
-                                * **Grammar:** Chỉ đúng khi dùng câu đơn.
-                                * **Pronunciation:** *(Dấu hiệu nhận biết: Transcript thường xuyên xuất hiện các từ vô nghĩa hoặc sai hoàn toàn ngữ cảnh do máy không nhận diện được âm).*
+                                * **BAND 8 (Rất tốt):**
+                                * **Fluency:** Mạch lạc, hiếm khi lặp lại.
+                                * **Vocab:** Dùng điêu luyện Idioms/từ hiếm.
+                                * **Grammar:** Hoàn toàn chính xác về thì quá khứ và hòa hợp chủ ngữ - động từ.
+                                * **Pronunciation:** Dễ hiểu xuyên suốt. Ngữ điệu tốt. Transcript chính xác 99%.
 
-                                * **BAND 4 (Hạn chế):**
-                                * **Fluency:** Câu cụt, ngắt quãng dài.
-                                * **Pronunciation:** Khó hiểu. Transcript gãy vụn, chứa nhiều từ không liên quan đến chủ đề.
+                                * **BAND 9 (Native-like):**
+                                * **Fluency:** Trôi chảy tự nhiên, không hề vấp váp.
+                                * **Vocab:** Chính xác tuyệt đối, tinh tế.
+                                * **Grammar:** Ngữ pháp và thì hoàn hảo tuyệt đối.
+                                * **Pronunciation:** Hoàn hảo. Transcript sạch bóng, không có bất kỳ từ nào sai ngữ cảnh hay vô nghĩa.
                                 ## OUTPUT FORMAT (Vietnamese Markdown):
                                 Trả về kết quả chi tiết:
 
@@ -1601,12 +1729,12 @@ else:
                 if st.session_state['reading_session']['status'] == 'intro':
                     st.info(f"### {data['title']}")
                     
-                    # LOGIC INTRO CỐ ĐỊNH (KHÔNG DÙNG AI)
+                    # LOGIC INTRO CỐ ĐỊNH
                     intro_text = ""
-                    # 1. Lesson 2 cho lớp PLA
+                    # 1. Lesson 2 
                     if "Lesson 2" in lesson_choice and user['class'].startswith("PLA"):
                          intro_text = "Thời chưa có vệ tinh, các thủy thủ rất sợ đi biển xa vì họ không biết mình đang ở đâu. Cách duy nhất để xác định vị trí là phải biết giờ chính xác. Nhưng khổ nỗi, đồng hồ quả lắc ngày xưa cứ mang lên tàu rung lắc là chạy sai hết. Bài này kể về hành trình chế tạo ra chiếc đồng hồ đi biển đầu tiên, thứ đã cứu mạng hàng ngàn thủy thủ."
-                    # 2. Lesson 3 (Cho mọi lớp hoặc PLA)
+                    # 2. Lesson 3
                     elif "Lesson 3" in lesson_choice:
                          intro_text = "Làm nông nghiệp ở Úc khó hơn nhiều so với ở Anh hay châu Âu vì đất đai ở đây rất khô và thiếu dinh dưỡng. Vào cuối thế kỷ 19, những người nông dân Úc đứng trước nguy cơ phá sản vì các phương pháp canh tác cũ không còn hiệu quả.\nBài đọc này sẽ cho các bạn thấy họ đã xoay sở như thế nào bằng công nghệ. Từ việc chế tạo ra chiếc cày đặc biệt có thể tự 'nhảy' qua gốc cây, cho đến việc lai tạo giống lúa mì chịu hạn. Chính những sáng kiến này đã biến nước Úc từ một nơi chỉ nuôi cừu thành một cường quốc xuất khẩu lúa mì thế giới."
                     
@@ -1632,14 +1760,14 @@ else:
 
                 # --- TRẠNG THÁI 2: DOING ---
                 elif st.session_state['reading_session']['status'] == 'doing':
-                    # Xử lý Timer (Javascript Realtime Countdown)
+                    # Xử lý Timer
                     timer_html = ""
                     if st.session_state['reading_session']['mode'] == 'exam':
                         end_time = st.session_state['reading_session']['end_time']
                         remaining_seconds = (end_time - datetime.now()).total_seconds()
                         
                         if remaining_seconds > 0:
-                            # Javascript để đếm ngược mượt mà không cần reload trang
+                            # Javascript
                             timer_html = f"""
                             <div style="font-size: 20px; font-weight: bold; color: #d35400; margin-bottom: 10px; font-family: 'Segoe UI', sans-serif;">
                                 ⏳ Thời gian còn lại: <span id="timer"></span>
@@ -1672,11 +1800,11 @@ else:
                     
                     with c_text:
                         st.subheader("Bài đọc")
-                        # --- Cập nhật UI: Hướng dẫn bôi đen highlight ---
+                        # Hướng dẫn bôi đen highlight
                         st.caption("💡 **Mẹo:** Bôi đen văn bản để highlight nhanh. (Lưu ý: Highlight sẽ mất khi nộp bài).")
 
                         display_text = data['text']
-                        # Xóa title cũ trong text nếu có để tránh lặp
+                        # Xóa title
                         if "###" in display_text:
                              display_text = re.sub(r"###.*?\n", "", display_text)
                         
